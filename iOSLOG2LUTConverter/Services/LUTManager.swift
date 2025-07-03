@@ -116,179 +116,141 @@ class LUTManager: ObservableObject {
     }
     
     private func loadPrimaryLUTs() -> [LUT] {
-        print("🔍 Attempting to load Primary LUTs...")
+        print("🔍 Loading Primary LUTs from app bundle...")
         
-        // Try multiple methods to find the LUT files
-        var primaryLUTsPath: String?
-        
-        // Method 1: Try Bundle.main.path
-        if let bundlePath = Bundle.main.path(forResource: "Primary LUTS", ofType: nil) {
-            primaryLUTsPath = bundlePath
-            print("✅ Found Primary LUTS via Bundle.main.path: \(bundlePath)")
-        }
-        // Method 2: Try Bundle.main.resourcePath
-        else if let resourcePath = Bundle.main.resourcePath {
-            let testPath = resourcePath + "/Primary LUTS"
-            if FileManager.default.fileExists(atPath: testPath) {
-                primaryLUTsPath = testPath
-                print("✅ Found Primary LUTS via resourcePath: \(testPath)")
-            } else {
-                print("❌ Primary LUTS not found at resourcePath: \(testPath)")
-            }
-        }
-        // Method 3: Try Bundle.main.bundleURL
-        else {
-            let bundleURL = Bundle.main.bundleURL.appendingPathComponent("Primary LUTS")
-            if FileManager.default.fileExists(atPath: bundleURL.path) {
-                primaryLUTsPath = bundleURL.path
-                print("✅ Found Primary LUTS via bundleURL: \(bundleURL.path)")
-            } else {
-                print("❌ Primary LUTS not found at bundleURL: \(bundleURL.path)")
-            }
+        // First try to find Primary LUTS subfolder (for simulator/development)
+        if let primaryLUTsURL = Bundle.main.url(forResource: "Primary LUTS", withExtension: nil) {
+            print("✅ Found Primary LUTS folder at: \(primaryLUTsURL.path)")
+            return loadLUTsFromDirectory(primaryLUTsURL, isPrimary: true)
         }
         
-        // If still not found, list all bundle contents for debugging
-        if primaryLUTsPath == nil {
-            print("❌ Could not find Primary LUTS directory anywhere")
-            print("🔍 Debugging bundle contents:")
-            if let resourcePath = Bundle.main.resourcePath {
-                print("📁 Bundle resource path: \(resourcePath)")
-                do {
-                    let contents = try FileManager.default.contentsOfDirectory(atPath: resourcePath)
-                    print("📋 Bundle contents: \(contents)")
-                } catch {
-                    print("❌ Error reading bundle contents: \(error)")
-                }
-            }
-            return []
+        // Fallback: Load from bundle root and filter by filename patterns (for device deployment)
+        print("📱 Primary LUTS folder not found, loading from bundle root...")
+        return loadPrimaryLUTsFromBundleRoot()
+    }
+    
+    private func loadSecondaryLUTs() -> [LUT] {
+        print("🔍 Loading Secondary LUTs from app bundle...")
+        
+        // First try to find Secondary LUTS subfolder (for simulator/development)
+        if let secondaryLUTsURL = Bundle.main.url(forResource: "Secondary LUTS", withExtension: nil) {
+            print("✅ Found Secondary LUTS folder at: \(secondaryLUTsURL.path)")
+            return loadLUTsFromDirectory(secondaryLUTsURL, isPrimary: false)
         }
         
-        guard let lutPath = primaryLUTsPath else {
-            print("❌ Primary LUTs path is nil")
-            return []
-        }
-        
-        print("📁 Looking for primary LUTs at: \(lutPath)")
-        
-        // Check if directory exists
-        let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: lutPath) {
-            print("❌ Primary LUTS directory does not exist at: \(lutPath)")
-            return []
-        }
-        
+        // Fallback: Load from bundle root and filter by filename patterns (for device deployment)
+        print("📱 Secondary LUTS folder not found, loading from bundle root...")
+        return loadSecondaryLUTsFromBundleRoot()
+    }
+    
+    private func loadLUTsFromDirectory(_ directoryURL: URL, isPrimary: Bool) -> [LUT] {
         do {
-            let lutFiles = try fileManager.contentsOfDirectory(atPath: lutPath)
-                .filter { $0.hasSuffix(".cube") }
-                .sorted()
+            let lutFiles = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension.lowercased() == "cube" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
             
-            print("📁 Found \(lutFiles.count) primary LUT files in Primary LUTS folder")
-            print("📋 Primary LUT files: \(lutFiles)")
+            print("📁 Found \(lutFiles.count) \(isPrimary ? "primary" : "secondary") LUT files")
             
-            return lutFiles.compactMap { fileName in
-                let filePath = lutPath + "/" + fileName
-                let fileURL = URL(fileURLWithPath: filePath)
-                
-                let lut = LUT(
-                    name: fileName,
-                    displayName: formatLUTName(fileName),
-                    description: generateLUTDescription(fileName),
-                    category: categorizePrimaryLUT(fileName),
-                    url: fileURL,
-                    isBuiltIn: true,
-                    isSecondary: false
-                )
-                
-                print("✅ Created primary LUT: \(lut.displayName) (\(lut.category.rawValue))")
-                return lut
+            let luts = lutFiles.compactMap { url in
+                isPrimary ? createPrimaryLUT(from: url) : createSecondaryLUT(from: url)
             }
+            
+            return luts
         } catch {
-            print("❌ Error loading primary LUTs: \(error)")
+            print("❌ Error loading LUTs from directory: \(error)")
             return []
         }
     }
     
-    private func loadSecondaryLUTs() -> [LUT] {
-        print("🔍 Attempting to load Secondary LUTs...")
-        
-        // Try multiple methods to find the LUT files
-        var secondaryLUTsPath: String?
-        
-        // Method 1: Try Bundle.main.path
-        if let bundlePath = Bundle.main.path(forResource: "Secondary LUTS", ofType: nil) {
-            secondaryLUTsPath = bundlePath
-            print("✅ Found Secondary LUTS via Bundle.main.path: \(bundlePath)")
-        }
-        // Method 2: Try Bundle.main.resourcePath
-        else if let resourcePath = Bundle.main.resourcePath {
-            let testPath = resourcePath + "/Secondary LUTS"
-            if FileManager.default.fileExists(atPath: testPath) {
-                secondaryLUTsPath = testPath
-                print("✅ Found Secondary LUTS via resourcePath: \(testPath)")
-            } else {
-                print("❌ Secondary LUTS not found at resourcePath: \(testPath)")
-            }
-        }
-        // Method 3: Try Bundle.main.bundleURL
-        else {
-            let bundleURL = Bundle.main.bundleURL.appendingPathComponent("Secondary LUTS")
-            if FileManager.default.fileExists(atPath: bundleURL.path) {
-                secondaryLUTsPath = bundleURL.path
-                print("✅ Found Secondary LUTS via bundleURL: \(bundleURL.path)")
-            } else {
-                print("❌ Secondary LUTS not found at bundleURL: \(bundleURL.path)")
-            }
-        }
-        
-        // If still not found, list all bundle contents for debugging
-        if secondaryLUTsPath == nil {
-            print("❌ Could not find Secondary LUTS directory anywhere")
-            return []
-        }
-        
-        guard let lutPath = secondaryLUTsPath else {
-            print("❌ Secondary LUTs path is nil")
-            return []
-        }
-        
-        print("📁 Looking for secondary LUTs at: \(lutPath)")
-        
-        // Check if directory exists
-        let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: lutPath) {
-            print("❌ Secondary LUTS directory does not exist at: \(lutPath)")
-            return []
-        }
+    private func loadPrimaryLUTsFromBundleRoot() -> [LUT] {
+        let bundleURL = Bundle.main.bundleURL
         
         do {
-            let lutFiles = try fileManager.contentsOfDirectory(atPath: lutPath)
-                .filter { $0.hasSuffix(".cube") }
-                .sorted()
+            let allFiles = try FileManager.default.contentsOfDirectory(at: bundleURL, includingPropertiesForKeys: nil)
+            let cubeFiles = allFiles.filter { $0.pathExtension.lowercased() == "cube" }
             
-            print("📁 Found \(lutFiles.count) secondary LUT files in Secondary LUTS folder")
-            print("📋 Secondary LUT files: \(lutFiles.prefix(10))...") // Show first 10 to avoid spam
+            // Filter for primary LUTs based on filename patterns
+            let primaryLUTFiles = cubeFiles.filter { url in
+                let filename = url.lastPathComponent.uppercased()
+                return filename.contains("APPLELOG") ||
+                       filename.contains("SGAMUT") ||
+                       filename.contains("SLOG") ||
+                       filename.contains("_TO_") ||
+                       filename.contains("FROM_")
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
             
-            return lutFiles.compactMap { fileName in
-                let filePath = lutPath + "/" + fileName
-                let fileURL = URL(fileURLWithPath: filePath)
-                
-                let lut = LUT(
-                    name: fileName,
-                    displayName: formatLUTName(fileName),
-                    description: generateLUTDescription(fileName),
-                    category: categorizeSecondaryLUT(fileName),
-                    url: fileURL,
-                    isBuiltIn: true,
-                    isSecondary: true
-                )
-                
-                print("✅ Created secondary LUT: \(lut.displayName) (\(lut.category.rawValue))")
-                return lut
-            }
+            print("📁 Found \(primaryLUTFiles.count) primary LUT files in bundle root")
+            print("📋 Primary LUT files: \(primaryLUTFiles.map { $0.lastPathComponent })")
+            
+            let luts = primaryLUTFiles.compactMap { createPrimaryLUT(from: $0) }
+            return luts
         } catch {
-            print("❌ Error loading secondary LUTs: \(error)")
+            print("❌ Error loading primary LUTs from bundle root: \(error)")
             return []
         }
+    }
+    
+    private func loadSecondaryLUTsFromBundleRoot() -> [LUT] {
+        let bundleURL = Bundle.main.bundleURL
+        
+        do {
+            let allFiles = try FileManager.default.contentsOfDirectory(at: bundleURL, includingPropertiesForKeys: nil)
+            let cubeFiles = allFiles.filter { $0.pathExtension.lowercased() == "cube" }
+            
+            // Filter for secondary LUTs (everything that's not a primary LUT)
+            let secondaryLUTFiles = cubeFiles.filter { url in
+                let filename = url.lastPathComponent.uppercased()
+                return !(filename.contains("APPLELOG") ||
+                        filename.contains("SGAMUT") ||
+                        filename.contains("SLOG") ||
+                        filename.contains("_TO_") ||
+                        filename.contains("FROM_"))
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            
+            print("📁 Found \(secondaryLUTFiles.count) secondary LUT files in bundle root")
+            print("📋 Secondary LUT files: \(secondaryLUTFiles.prefix(10).map { $0.lastPathComponent })...")
+            
+            let luts = secondaryLUTFiles.compactMap { createSecondaryLUT(from: $0) }
+            return luts
+        } catch {
+            print("❌ Error loading secondary LUTs from bundle root: \(error)")
+            return []
+        }
+    }
+    
+    // MARK: - LUT Creation Helper Methods
+    private func createPrimaryLUT(from url: URL) -> LUT? {
+        let fileName = url.lastPathComponent
+        
+        let lut = LUT(
+            name: fileName,
+            displayName: formatLUTName(fileName),
+            description: generateLUTDescription(fileName),
+            category: categorizePrimaryLUT(fileName),
+            url: url,
+            isBuiltIn: true,
+            isSecondary: false
+        )
+        
+        print("✅ Created primary LUT: \(lut.displayName) (\(lut.category.rawValue))")
+        return lut
+    }
+    
+    private func createSecondaryLUT(from url: URL) -> LUT? {
+        let fileName = url.lastPathComponent
+        
+        let lut = LUT(
+            name: fileName,
+            displayName: formatLUTName(fileName),
+            description: generateLUTDescription(fileName),
+            category: categorizeSecondaryLUT(fileName),
+            url: url,
+            isBuiltIn: true,
+            isSecondary: true
+        )
+        
+        print("✅ Created secondary LUT: \(lut.displayName) (\(lut.category.rawValue))")
+        return lut
     }
     
     // MARK: - LUT Categorization

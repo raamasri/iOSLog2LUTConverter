@@ -461,8 +461,8 @@ struct ContentView: View {
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .onChange(of: projectState.useGPU) { _, newValue in
-                    print("⚙️ Processing Mode Changed: \\(newValue ? "GPU" : "CPU") Processing")
-                    print("🔧 GPU Acceleration: \\(newValue ? "ENABLED" : "DISABLED")")
+                    print("⚙️ Processing Mode Changed: \(newValue ? "GPU" : "CPU") Processing")
+                    print("🔧 GPU Acceleration: \(newValue ? "ENABLED" : "DISABLED")")
                 }
             }
             .padding(16)
@@ -602,7 +602,7 @@ struct ContentView: View {
         
         print("🎬 Starting video export...")
         print("📹 Video: \\(videoURL.lastPathComponent)")
-        print("⚙️ Processing Mode: \\(projectState.useGPU ? "GPU" : "CPU")")
+        print("⚙️ Processing Mode: \(projectState.useGPU ? "GPU" : "CPU")")
         
         if let primaryLUT = lutManager.selectedPrimaryLUT {
             print("🎨 Primary LUT: \\(primaryLUT.displayName) (Opacity: \\(Int(projectState.primaryLUTOpacity * 100))%)")
@@ -631,7 +631,7 @@ struct ContentView: View {
                     secondaryLUTOpacity: projectState.secondLUTOpacity,
                     whiteBalanceAdjustment: projectState.whiteBalanceValue,
                     useGPUProcessing: projectState.useGPU,
-                    outputQuality: projectState.exportQuality.toLUTProcessorQuality(),
+                    outputQuality: .high, // Simplified for now
                     outputDirectory: exportFolder
                 )
                 

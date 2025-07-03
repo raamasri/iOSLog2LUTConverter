@@ -241,28 +241,94 @@ class ProjectState: ObservableObject {
         
         Task {
             do {
-                // Generate a simple video frame preview for now
-                let asset = AVAsset(url: videoURLs[0])
+                let videoURL = videoURLs[0]
+                
+                // Detailed video analysis for debugging
+                print("🔍 Video Analysis:")
+                print("   - URL: \(videoURL.path)")
+                print("   - File exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
+                
+                let asset = AVAsset(url: videoURL)
+                
+                // Load asset properties for debugging
+                let duration = try await asset.load(.duration)
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                
+                print("   - Duration: \(duration.seconds) seconds")
+                print("   - Video tracks: \(tracks.count)")
+                
+                if let videoTrack = tracks.first {
+                    let naturalSize = try await videoTrack.load(.naturalSize)
+                    let formatDescriptions = try await videoTrack.load(.formatDescriptions)
+                    print("   - Resolution: \(naturalSize.width)x\(naturalSize.height)")
+                    print("   - Format descriptions: \(formatDescriptions.count)")
+                    
+                    if let formatDesc = formatDescriptions.first {
+                        let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDesc)
+                        let fourCC = String(format: "%c%c%c%c", 
+                                          (mediaSubType >> 24) & 0xFF,
+                                          (mediaSubType >> 16) & 0xFF, 
+                                          (mediaSubType >> 8) & 0xFF,
+                                          mediaSubType & 0xFF)
+                        print("   - Codec: \(fourCC)")
+                    }
+                }
+                
                 let generator = AVAssetImageGenerator(asset: asset)
                 generator.appliesPreferredTrackTransform = true
-                generator.requestedTimeToleranceAfter = .zero
-                generator.requestedTimeToleranceBefore = .zero
+                generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+                generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
                 
-                let time = CMTime(seconds: 1.0, preferredTimescale: 600)
-                let cgImage = try await generator.image(at: time).image
-                let previewUIImage = UIImage(cgImage: cgImage)
+                // Try different strategies for problematic videos
+                let timePositions = [0.1, 0.5, 1.0, 2.0, duration.seconds * 0.1]
+                var lastError: Error?
                 
-                await MainActor.run {
-                    self.previewImage = previewUIImage
-                    self.isPreviewLoading = false
-                    self.updateStatus("Preview generated (LUT processing coming soon)")
-                    print("✅ ProjectState: Preview generated successfully")
+                for (index, timePosition) in timePositions.enumerated() {
+                    guard timePosition < duration.seconds && timePosition >= 0 else { continue }
+                    
+                    let time = CMTime(seconds: timePosition, preferredTimescale: 600)
+                    
+                    do {
+                        print("🎬 Attempt \(index + 1): Generating image at \(timePosition) seconds...")
+                        let result = try await generator.image(at: time)
+                        let cgImage = result.image
+                        let previewUIImage = UIImage(cgImage: cgImage)
+                        
+                        await MainActor.run {
+                            self.previewImage = previewUIImage
+                            self.isPreviewLoading = false
+                            self.updateStatus("Preview generated at \(String(format: "%.1f", timePosition))s")
+                            print("✅ ProjectState: Preview generated successfully at \(timePosition)s")
+                        }
+                        return // Success, exit
+                        
+                    } catch {
+                        print("❌ Attempt \(index + 1) failed: \(error.localizedDescription)")
+                        lastError = error
+                        
+                        // Print detailed error info
+                        if let nsError = error as NSError? {
+                            print("   - Domain: \(nsError.domain)")
+                            print("   - Code: \(nsError.code)")
+                            print("   - UserInfo: \(nsError.userInfo)")
+                        }
+                        continue
+                    }
                 }
+                
+                // If all attempts failed, throw the last error
+                throw lastError ?? NSError(domain: "PreviewError", code: -1, userInfo: [NSLocalizedDescriptionKey: "All preview generation attempts failed"])
+                
             } catch {
                 await MainActor.run {
                     self.isPreviewLoading = false
                     self.updateStatus("Preview generation failed: \(error.localizedDescription)")
                     print("❌ ProjectState: Preview generation failed: \(error.localizedDescription)")
+                    
+                    // Create a placeholder image for problematic videos
+                    let placeholderImage = self.createPlaceholderImage()
+                    self.previewImage = placeholderImage
+                    print("📷 Created placeholder image for problematic video")
                 }
             }
         }
@@ -284,6 +350,43 @@ class ProjectState: ObservableObject {
         exportQuality = .high
         shouldOptimizeForBattery = true
         updateStatus("Reset to defaults")
+    }
+    
+    // MARK: - Helper Methods
+    private func createPlaceholderImage() -> UIImage {
+        let size = CGSize(width: 400, height: 300)
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        let context = UIGraphicsGetCurrentContext()!
+        
+        // Dark background
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+        
+        // Gray border
+        context.setStrokeColor(UIColor.gray.cgColor)
+        context.setLineWidth(2.0)
+        context.stroke(CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1))
+        
+        // Play icon in center
+        let playIconSize: CGFloat = 60
+        let playIconRect = CGRect(
+            x: (size.width - playIconSize) / 2,
+            y: (size.height - playIconSize) / 2,
+            width: playIconSize,
+            height: playIconSize
+        )
+        
+        context.setFillColor(UIColor.white.cgColor)
+        context.beginPath()
+        context.move(to: CGPoint(x: playIconRect.minX + 15, y: playIconRect.minY + 10))
+        context.addLine(to: CGPoint(x: playIconRect.maxX - 15, y: playIconRect.midY))
+        context.addLine(to: CGPoint(x: playIconRect.minX + 15, y: playIconRect.maxY - 10))
+        context.closePath()
+        context.fillPath()
+        
+        return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
     }
 }
 

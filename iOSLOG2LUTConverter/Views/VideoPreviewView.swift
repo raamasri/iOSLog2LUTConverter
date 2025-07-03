@@ -3,13 +3,12 @@ import AVFoundation
 
 // MARK: - Prominent Video Preview Component with Apple Design
 struct VideoPreviewView: View {
-    @State private var previewImage: Image?
-    @State private var isLoading: Bool = false
+    @ObservedObject var projectState: ProjectState
     @State private var showControls: Bool = false
     @Environment(\.colorScheme) var colorScheme
     
-    // Callback to trigger photo picker from parent
-    var onImportVideoTapped: (() -> Void)?
+    // Debug mode gesture
+    @State private var tapCount = 0
     
     var body: some View {
         GeometryReader { geometry in
@@ -20,13 +19,13 @@ struct VideoPreviewView: View {
                 
                 // Preview content or placeholder
                 Group {
-                    if let previewImage = previewImage {
-                        // Actual video preview
-                        previewImage
+                    if let previewImage = projectState.previewImage {
+                        // Actual video preview with LUT applied
+                        Image(uiImage: previewImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .transition(.opacity.combined(with: .scale))
-                    } else if isLoading {
+                    } else if projectState.isPreviewLoading {
                         // Loading state with Apple-like spinner
                         loadingView
                     } else {
@@ -36,7 +35,7 @@ struct VideoPreviewView: View {
                 }
                 
                 // Preview controls overlay (when video is loaded)
-                if previewImage != nil {
+                if projectState.previewImage != nil {
                     previewControlsOverlay
                         .opacity(showControls ? 1.0 : 0.0)
                         .animation(.easeInOut(duration: 0.3), value: showControls)
@@ -46,13 +45,30 @@ struct VideoPreviewView: View {
                 lutIndicator
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(16)
+                
+                // Debug mode indicator (top left)
+                if projectState.isDebugMode {
+                    debugModeIndicator
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(16)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .shadow(color: .black.opacity(0.3), radius: 15, x: 0, y: 8)
             .onTapGesture {
-                if previewImage != nil {
+                if projectState.previewImage != nil {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         showControls.toggle()
+                    }
+                } else {
+                    // Triple tap to enable debug mode
+                    tapCount += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        if tapCount >= 3 {
+                            print("🧪 Triple tap detected - enabling debug mode")
+                            projectState.enableDebugMode()
+                        }
+                        tapCount = 0
                     }
                 }
             }
@@ -173,22 +189,43 @@ struct VideoPreviewView: View {
             .thickMaterial,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
-        .opacity(previewImage != nil ? 1.0 : 0.0)
-        .animation(.easeInOut(duration: 0.3), value: previewImage != nil)
+        .opacity(projectState.previewImage != nil ? 1.0 : 0.0)
+        .animation(.easeInOut(duration: 0.3), value: projectState.previewImage != nil)
+    }
+    
+    // MARK: - Debug Mode Indicator
+    private var debugModeIndicator: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.caption)
+                .foregroundStyle(.yellow)
+            
+            Text("Debug Mode")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            .ultraThinMaterial.opacity(0.7),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
     }
     
     // MARK: - Simulation Methods (for demonstration)
     private func simulateVideoImport() {
-        isLoading = true
+        projectState.isPreviewLoading = true
         
         // Simulate loading delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            isLoading = false
+            projectState.isPreviewLoading = false
             
-            // Create a placeholder preview image
-            withAnimation(.easeInOut(duration: 0.5)) {
-                previewImage = Image(systemName: "video.fill")
-            }
+                         // Create a placeholder preview image
+             withAnimation(.easeInOut(duration: 0.5)) {
+                 // This will be set by the actual preview generation
+                 projectState.updateStatus("Placeholder preview ready")
+             }
         }
     }
 }
@@ -196,7 +233,7 @@ struct VideoPreviewView: View {
 // MARK: - Preview
 #Preview {
     VStack {
-        VideoPreviewView()
+        VideoPreviewView(projectState: ProjectState())
             .frame(height: 400)
             .padding()
         
@@ -208,11 +245,12 @@ struct VideoPreviewView: View {
 
 #Preview("With Video") {
     VStack {
-        VideoPreviewView()
+        VideoPreviewView(projectState: ProjectState())
             .frame(height: 400)
             .padding()
             .onAppear {
                 // Simulate having a video loaded
+                // This will now trigger the debug mode gesture
             }
         
         Spacer()

@@ -34,6 +34,52 @@ class ProjectState: ObservableObject {
     @Published var recentProjects: [RecentProject] = []
     @Published var favoriteProjects: [FavoriteProject] = []
     
+    // MARK: - Debug/Test Mode
+    @Published var isDebugMode = false
+    private var debugModeEnabled: Bool {
+        // Enable debug mode with a triple tap or set this to true for testing
+        return true  // Set to false for production
+    }
+    
+    func enableDebugMode() {
+        guard debugModeEnabled else { return }
+        
+        print("🧪 Debug Mode: Initializing test environment...")
+        isDebugMode = true
+        
+        // Load test video from Resources/testfootage/test.mp4
+        loadTestVideo()
+        
+        // Auto-select first primary and secondary LUTs
+        autoSelectTestLUTs()
+        
+        updateStatus("Debug mode: Test video and LUTs loaded")
+        print("🧪 Debug Mode: Environment ready for testing")
+    }
+    
+    private func loadTestVideo() {
+        guard let testVideoURL = Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "testfootage") else {
+            print("❌ Debug Mode: test.mp4 not found in Resources/testfootage/")
+            return
+        }
+        
+        print("✅ Debug Mode: Loading test video from \(testVideoURL.path)")
+        addVideoURL(testVideoURL)
+    }
+    
+    private func autoSelectTestLUTs() {
+        // This will be called after LUTManager loads the LUTs
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            // Auto-select first available LUTs for testing
+            print("🧪 Debug Mode: Auto-selecting test LUTs...")
+            self.autoSelectLUTsIfAvailable()
+        }
+    }
+    
+    func autoSelectLUTsIfAvailable() {
+        // This method will be called from ContentView after LUTManager is loaded
+    }
+    
     // MARK: - Computed Properties
     var isReadyForPreview: Bool {
         return !videoURLs.isEmpty && primaryLUTURL != nil
@@ -176,16 +222,52 @@ class ProjectState: ObservableObject {
             return 
         }
         
+        print("🖼️ ProjectState: Generating preview...")
         isPreviewLoading = true
         updateStatus("Generating preview...")
         
-        // This will be implemented when we add the video processor
-        // For now, just simulate preview generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.isPreviewLoading = false
-            self.updateStatus("Preview ready")
-        }
-    }
+        Task {
+            do {
+                // Generate preview with LUT applied
+                let videoProcessor = VideoProcessor()
+                
+                print("🎬 ProjectState: Processing preview with LUTs")
+                print("   - Primary LUT: \\(primaryLUTURL?.lastPathComponent ?? "None")")
+                print("   - Secondary LUT: \\(secondaryLUTURL?.lastPathComponent ?? "None")")
+                print("   - Primary Opacity: \\(primaryLUTOpacity)")
+                print("   - Secondary Opacity: \\(secondLUTOpacity)")
+                
+                // Create processing config for preview
+                let config = VideoProcessor.ProcessingConfig(
+                    videoURLs: videoURLs,
+                    primaryLUTURL: primaryLUTURL,
+                    secondaryLUTURL: secondaryLUTURL,
+                    secondaryLUTOpacity: secondLUTOpacity,
+                    whiteBalanceAdjustment: whiteBalanceValue,
+                    useGPUProcessing: useGPU,
+                    outputQuality: exportQuality.toLUTProcessorQuality(),
+                    outputDirectory: getDocumentsDirectory()
+                )
+                
+                let previewUIImage = try await videoProcessor.generatePreview(
+                    videoURL: videoURLs.first!,
+                    settings: config
+                )
+                
+                await MainActor.run {
+                    self.previewImage = previewUIImage
+                    self.isPreviewLoading = false
+                    self.updateStatus("Preview ready with LUT applied")
+                    print("✅ ProjectState: Preview generated successfully")
+                }
+            } catch {
+                await MainActor.run {
+                    self.isPreviewLoading = false
+                    self.updateStatus("Preview generation failed: \\(error.localizedDescription)")
+                    print("❌ ProjectState: Preview generation failed: \\(error)")
+                }
+            }
+        }\n    }
     
     func optimizeForBattery() {
         if shouldOptimizeForBattery {

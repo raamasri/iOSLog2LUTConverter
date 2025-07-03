@@ -580,13 +580,13 @@ struct ContentView: View {
         
         // Auto-select first primary LUT
         if let firstPrimaryLUT = lutManager.primaryLUTs.first {
-            print("✅ Debug: Auto-selecting primary LUT: \\(firstPrimaryLUT.displayName)")
+            print("✅ Debug: Auto-selecting primary LUT: \(firstPrimaryLUT.displayName)")
             lutManager.selectedPrimaryLUT = firstPrimaryLUT
         }
         
         // Auto-select first secondary LUT
         if let firstSecondaryLUT = lutManager.secondaryLUTs.first {
-            print("✅ Debug: Auto-selecting secondary LUT: \\(firstSecondaryLUT.displayName)")
+            print("✅ Debug: Auto-selecting secondary LUT: \(firstSecondaryLUT.displayName)")
             lutManager.selectedSecondaryLUT = firstSecondaryLUT
         }
         
@@ -601,14 +601,14 @@ struct ContentView: View {
         }
         
         print("🎬 Starting video export...")
-        print("📹 Video: \\(videoURL.lastPathComponent)")
+        print("📹 Video: \(videoURL.lastPathComponent)")
         print("⚙️ Processing Mode: \(projectState.useGPU ? "GPU" : "CPU")")
         
         if let primaryLUT = lutManager.selectedPrimaryLUT {
-            print("🎨 Primary LUT: \\(primaryLUT.displayName) (Opacity: \\(Int(projectState.primaryLUTOpacity * 100))%)")
+            print("🎨 Primary LUT: \(primaryLUT.displayName) (Opacity: \(Int(projectState.primaryLUTOpacity * 100))%)")
         }
         if let secondaryLUT = lutManager.selectedSecondaryLUT {
-            print("🎭 Secondary LUT: \\(secondaryLUT.displayName) (Opacity: \\(Int(projectState.secondLUTOpacity * 100))%)")
+            print("🎭 Secondary LUT: \(secondaryLUT.displayName) (Opacity: \(Int(projectState.secondLUTOpacity * 100))%)")
         }
         if lutManager.selectedPrimaryLUT == nil && lutManager.selectedSecondaryLUT == nil {
             print("📱 Exporting without LUT (original video)")
@@ -621,7 +621,7 @@ struct ContentView: View {
                 let exportFolder = documentsPath.appendingPathComponent("LUTexport")
                 
                 try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
-                print("📁 Export folder created: \\(exportFolder.path)")
+                print("📁 Export folder created: \(exportFolder.path)")
                 
                 // Create video processor config
                 let config = VideoProcessor.ProcessingConfig(
@@ -639,10 +639,10 @@ struct ContentView: View {
                 await videoProcessor.processVideos(config: config)
                 
                 print("✅ Export completed successfully!")
-                print("📁 Exported to: \\(exportFolder.path)")
+                print("📁 Exported to: \(exportFolder.path)")
                 
             } catch {
-                print("❌ Export failed: \\(error.localizedDescription)")
+                print("❌ Export failed: \(error.localizedDescription)")
             }
         }
     }

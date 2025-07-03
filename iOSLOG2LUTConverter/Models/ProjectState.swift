@@ -59,13 +59,17 @@ class ProjectState: ObservableObject {
     }
     
     private func loadTestVideo() {
-        guard let testVideoURL = Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "testfootage") else {
-            print("❌ Debug Mode: test.mp4 not found in Resources/testfootage/")
+        // Try both .mp4 and .MP4 extensions
+        let testVideoURL = Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "testfootage") ??
+                          Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "testfootage")
+        
+        guard let videoURL = testVideoURL else {
+            print("❌ Debug Mode: test video not found in Resources/testfootage/ (tried .mp4 and .MP4)")
             return
         }
         
-        print("✅ Debug Mode: Loading test video from \(testVideoURL.path)")
-        addVideoURL(testVideoURL)
+        print("✅ Debug Mode: Loading test video from \(videoURL.path)")
+        addVideoURL(videoURL)
     }
     
     private func autoSelectTestLUTs() {

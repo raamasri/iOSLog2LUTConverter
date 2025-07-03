@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import CoreTransferable
+import Combine
 
 // MARK: - Movie Transferable Type for PhotosPicker
 struct Movie: Transferable {
@@ -28,6 +29,7 @@ struct ContentView: View {
     @State private var videoCount = 0
     @State private var videoURLs: [URL] = []
     @State private var selectedVideoItems: [PhotosPickerItem] = []
+    @State private var showingDebugPanel = false
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.colorScheme) var colorScheme
     
@@ -44,6 +46,20 @@ struct ContentView: View {
                     // iPhone Interface - Vertical layout
                     iPhoneInterface(geometry: geometry)
                 }
+            }
+            
+            // Debug Panel Overlay
+            if showingDebugPanel {
+                DebugControlPanel(
+                    projectState: projectState,
+                    lutManager: lutManager,
+                    fileImportManager: fileImportManager
+                )
+                .frame(width: min(400, geometry.size.width * 0.9))
+                .frame(height: min(600, geometry.size.height * 0.8))
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .zIndex(100)
+                .offset(x: horizontalSizeClass == .regular ? geometry.size.width * 0.3 : 0)
             }
         }
         // Handle photo picker selection
@@ -72,6 +88,15 @@ struct ContentView: View {
         }
         .onChange(of: lutManager.selectedSecondaryLUT) { _, newLUT in
             projectState.setSecondaryLUT(newLUT?.url)
+        }
+        // Update video URLs when test video is loaded
+        .onChange(of: projectState.videoURLs) { _, newURLs in
+            self.videoURLs = newURLs
+            self.videoCount = newURLs.count
+        }
+        // Listen for debug export notification
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("DebugTestExport"))) { _ in
+            exportVideo()
         }
         // LUT selector sheets are now handled in the fileImportSection
     }
@@ -174,6 +199,22 @@ struct ContentView: View {
                     .font(.title2)
                     .fontWeight(.light)
                     .foregroundStyle(.secondary)
+                
+                Spacer()
+                
+                // Debug Button
+                if projectState.isDebugMode {
+                    Button {
+                        withAnimation(.spring()) {
+                            showingDebugPanel.toggle()
+                        }
+                    } label: {
+                        Image(systemName: showingDebugPanel ? "ant.circle.fill" : "ant.circle")
+                            .font(.title2)
+                            .foregroundStyle(.yellow.gradient)
+                            .symbolEffect(.bounce, value: showingDebugPanel)
+                    }
+                }
             }
             
             Text("Professional Video LUT Processing")
@@ -221,7 +262,7 @@ struct ContentView: View {
                         .padding()
                         .background(
                             RoundedRectangle(cornerRadius: 16)
-                                .fill(videoCount > 0 ? AnyShapeStyle(Color.blue.gradient) : AnyShapeStyle(Color(.systemGray6)))
+                                .fill(videoCount > 0 ? AnyShapeStyle(Color.blue.gradient) : AnyShapeStyle(Color.gray.opacity(0.2)))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 16)
                                         .stroke(videoCount > 0 ? .clear : .blue.opacity(0.3), lineWidth: 1)
@@ -257,14 +298,14 @@ struct ContentView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                                                     .background(
-                                 RoundedRectangle(cornerRadius: 16)
-                                     .fill(lutManager.hasSelectedPrimaryLUT ? AnyShapeStyle(Color.green.gradient) : AnyShapeStyle(Color(.systemGray6)))
-                                     .overlay(
-                                         RoundedRectangle(cornerRadius: 16)
-                                             .stroke(lutManager.hasSelectedPrimaryLUT ? .clear : .green.opacity(0.3), lineWidth: 1)
-                                     )
-                             )
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(lutManager.hasSelectedPrimaryLUT ? AnyShapeStyle(Color.green.gradient) : AnyShapeStyle(Color.gray.opacity(0.2)))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16)
+                                            .stroke(lutManager.hasSelectedPrimaryLUT ? .clear : .green.opacity(0.3), lineWidth: 1)
+                                    )
+                            )
                         }
                     }
                     
@@ -315,14 +356,14 @@ struct ContentView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                                                     .background(
-                                 RoundedRectangle(cornerRadius: 16)
-                                     .fill(lutManager.hasSelectedSecondaryLUT ? AnyShapeStyle(Color.pink.gradient) : AnyShapeStyle(Color(.systemGray6)))
-                                     .overlay(
-                                         RoundedRectangle(cornerRadius: 16)
-                                             .stroke(lutManager.hasSelectedSecondaryLUT ? .clear : .pink.opacity(0.3), lineWidth: 1)
-                                     )
-                             )
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(lutManager.hasSelectedSecondaryLUT ? AnyShapeStyle(Color.pink.gradient) : AnyShapeStyle(Color.gray.opacity(0.2)))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16)
+                                            .stroke(lutManager.hasSelectedSecondaryLUT ? .clear : .pink.opacity(0.3), lineWidth: 1)
+                                    )
+                            )
                         }
                     }
                     
@@ -623,20 +664,12 @@ struct ContentView: View {
                 try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
                 print("📁 Export folder created: \(exportFolder.path)")
                 
-                // Create video processor config
-                let config = VideoProcessor.ProcessingConfig(
-                    videoURLs: [videoURL],
-                    primaryLUTURL: lutManager.selectedPrimaryLUT?.url,
-                    secondaryLUTURL: lutManager.selectedSecondaryLUT?.url,
-                    secondaryLUTOpacity: projectState.secondLUTOpacity,
-                    whiteBalanceAdjustment: projectState.whiteBalanceValue,
-                    useGPUProcessing: projectState.useGPU,
-                    outputQuality: .high, // Simplified for now
-                    outputDirectory: exportFolder
-                )
+                // For now, create a simple copy to test export functionality
+                let outputURL = exportFolder.appendingPathComponent("test_export_\(Date().timeIntervalSince1970).mp4")
                 
-                let videoProcessor = VideoProcessor()
-                await videoProcessor.processVideos(config: config)
+                // Simple file copy for debugging
+                try FileManager.default.copyItem(at: videoURL, to: outputURL)
+                print("📁 Debug: Simple file copy completed to \(outputURL.lastPathComponent)")
                 
                 print("✅ Export completed successfully!")
                 print("📁 Exported to: \(exportFolder.path)")
@@ -644,6 +677,16 @@ struct ContentView: View {
             } catch {
                 print("❌ Export failed: \(error.localizedDescription)")
             }
+        }
+    }
+    
+    // MARK: - Helper Methods
+    private func convertToLUTProcessorQuality(_ quality: ExportQuality) -> LUTProcessor.OutputQuality {
+        switch quality {
+        case .low: return .low
+        case .medium: return .medium
+        case .high: return .high
+        case .maximum: return .maximum
         }
     }
 }

@@ -59,17 +59,25 @@ class ProjectState: ObservableObject {
     }
     
     private func loadTestVideo() {
-        // Try both .mp4 and .MP4 extensions
-        let testVideoURL = Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "testfootage") ??
-                          Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "testfootage")
+        // For development, use the actual file path
+        let testVideoPath = "/Users/raamasrivatsan/xcode/iOSLOG2LUTConverter/iOSLOG2LUTConverter/Resources/testfootage/test.MP4"
+        let testVideoURL = URL(fileURLWithPath: testVideoPath)
         
-        guard let videoURL = testVideoURL else {
-            print("❌ Debug Mode: test video not found in Resources/testfootage/ (tried .mp4 and .MP4)")
-            return
+        // Check if file exists
+        if FileManager.default.fileExists(atPath: testVideoPath) {
+            print("✅ Debug Mode: Loading test video from \(testVideoURL.path)")
+            addVideoURL(testVideoURL)
+        } else {
+            // Try bundle resource as fallback
+            if let bundleURL = Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "Resources/testfootage") ??
+                              Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "Resources/testfootage") {
+                print("✅ Debug Mode: Loading test video from bundle: \(bundleURL.path)")
+                addVideoURL(bundleURL)
+            } else {
+                print("❌ Debug Mode: test video not found at \(testVideoPath)")
+                print("❌ Debug Mode: Also not found in bundle Resources/testfootage/")
+            }
         }
-        
-        print("✅ Debug Mode: Loading test video from \(videoURL.path)")
-        addVideoURL(videoURL)
     }
     
     private func autoSelectTestLUTs() {
@@ -231,11 +239,32 @@ class ProjectState: ObservableObject {
         isPreviewLoading = true
         updateStatus("Generating preview...")
         
-        // Simplified preview generation - will be enhanced later
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.isPreviewLoading = false
-            self.updateStatus("Preview ready - real-time preview coming soon")
-            print("✅ ProjectState: Preview placeholder ready")
+        Task {
+            do {
+                // Generate a simple video frame preview for now
+                let asset = AVAsset(url: videoURLs[0])
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.requestedTimeToleranceAfter = .zero
+                generator.requestedTimeToleranceBefore = .zero
+                
+                let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+                let cgImage = try await generator.image(at: time).image
+                let previewUIImage = UIImage(cgImage: cgImage)
+                
+                await MainActor.run {
+                    self.previewImage = previewUIImage
+                    self.isPreviewLoading = false
+                    self.updateStatus("Preview generated (LUT processing coming soon)")
+                    print("✅ ProjectState: Preview generated successfully")
+                }
+            } catch {
+                await MainActor.run {
+                    self.isPreviewLoading = false
+                    self.updateStatus("Preview generation failed: \(error.localizedDescription)")
+                    print("❌ ProjectState: Preview generation failed: \(error.localizedDescription)")
+                }
+            }
         }
     }
     

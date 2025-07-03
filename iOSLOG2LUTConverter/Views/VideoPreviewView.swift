@@ -8,6 +8,9 @@ struct VideoPreviewView: View {
     @State private var showControls: Bool = false
     @Environment(\.colorScheme) var colorScheme
     
+    // Callback to trigger photo picker from parent
+    var onImportVideoTapped: (() -> Void)?
+    
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -77,34 +80,7 @@ struct VideoPreviewView: View {
                     .multilineTextAlignment(.center)
             }
             
-            // Import hint with glassy button design
-            Button(action: {
-                // This will trigger file import
-                simulateVideoImport()
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.subheadline)
-                    
-                    Text("Import Video")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(
-                    .ultraThinMaterial.opacity(0.8),
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(.white.opacity(0.2), lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-            .scaleEffect(showControls ? 1.05 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showControls)
+            // Removed Import Video button - use the one below in the controls section
         }
         .padding(40)
         .background(

@@ -11,6 +11,7 @@ class ProjectState: ObservableObject {
     @Published var videoURLs: [URL] = []
     @Published var primaryLUTURL: URL?
     @Published var secondaryLUTURL: URL?
+    @Published var primaryLUTOpacity: Float = 1.0
     @Published var secondLUTOpacity: Float = 1.0
     @Published var useGPU: Bool = true
     @Published var whiteBalanceValue: Float = 0.0
@@ -195,6 +196,7 @@ class ProjectState: ObservableObject {
     }
     
     func resetToDefaults() {
+        primaryLUTOpacity = 1.0
         secondLUTOpacity = 1.0
         whiteBalanceValue = 0.0
         useGPU = true

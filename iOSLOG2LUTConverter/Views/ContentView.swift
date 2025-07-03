@@ -1,14 +1,33 @@
 import SwiftUI
+import PhotosUI
+import CoreTransferable
+
+// MARK: - Movie Transferable Type for PhotosPicker
+struct Movie: Transferable {
+    let url: URL
+    
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let copy = URL.documentsDirectory.appending(path: "movie.mov")
+            if FileManager.default.fileExists(atPath: copy.path()) {
+                try FileManager.default.removeItem(at: copy)
+            }
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return Self.init(url: copy)
+        }
+    }
+}
 
 // MARK: - Main App Content View with Apple Design Language
 struct ContentView: View {
     @StateObject private var fileImportManager = FileImportManager()
+    @StateObject private var lutManager = LUTManager()
+    @StateObject private var projectState = ProjectState()
     @State private var videoCount = 0
-    @State private var lutSelected = false
-    @State private var secondaryLutSelected = false
     @State private var videoURLs: [URL] = []
-    @State private var primaryLUTURL: URL?
-    @State private var secondaryLUTURL: URL?
+    @State private var selectedVideoItems: [PhotosPickerItem] = []
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.colorScheme) var colorScheme
     
@@ -27,55 +46,34 @@ struct ContentView: View {
                 }
             }
         }
-        // Native iOS file import functionality
-        .fileImporter(
-            isPresented: $fileImportManager.isShowingVideoPicker,
-            allowedContentTypes: FileImportManager.SupportedVideoTypes.types,
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                for url in urls {
-                    fileImportManager.importVideo(from: url)
+        // Handle photo picker selection
+        .onChange(of: selectedVideoItems) { _, newItems in
+            guard let item = newItems.first else { return }
+            
+            item.loadTransferable(type: Movie.self) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                                         case .success(let movie?):
+                         let url = movie.url
+                         self.videoURLs = [url]
+                         self.videoCount = 1
+                         print("✅ Video imported successfully: \(url.lastPathComponent)")
+                    case .failure(let error):
+                        print("❌ Failed to import video: \(error)")
+                    case .success(.none):
+                        print("❌ No video data found")
+                    }
                 }
-                videoURLs = urls
-                videoCount = urls.count
-            case .failure(let error):
-                print("Error importing videos: \(error.localizedDescription)")
             }
         }
-        .fileImporter(
-            isPresented: $fileImportManager.isShowingLUTPicker,
-            allowedContentTypes: FileImportManager.SupportedLUTTypes.types,
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    fileImportManager.importLUT(from: url)
-                    primaryLUTURL = url
-                    lutSelected = true
-                }
-            case .failure(let error):
-                print("Error importing LUT: \(error.localizedDescription)")
-            }
+        // Update ProjectState when LUTs are selected
+        .onChange(of: lutManager.selectedPrimaryLUT) { _, newLUT in
+            projectState.setPrimaryLUT(newLUT?.url)
         }
-        .fileImporter(
-            isPresented: $fileImportManager.isShowingSecondaryLUTPicker,
-            allowedContentTypes: FileImportManager.SupportedLUTTypes.types,
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    fileImportManager.importLUT(from: url, isSecondary: true)
-                    secondaryLUTURL = url
-                    secondaryLutSelected = true
-                }
-            case .failure(let error):
-                print("Error importing secondary LUT: \(error.localizedDescription)")
-            }
+        .onChange(of: lutManager.selectedSecondaryLUT) { _, newLUT in
+            projectState.setSecondaryLUT(newLUT?.url)
         }
+        // LUT selector sheets are now handled in the fileImportSection
     }
     
     // MARK: - Background Gradient
@@ -145,8 +143,7 @@ struct ContentView: View {
             // File Import Section with Real Import Functionality
             fileImportSection
             
-            // LUT Controls Section
-            lutControlsSection
+            // LUT Controls Section - Now integrated into import buttons above
             
             // Export Controls Section
             exportControlsSection
@@ -187,43 +184,183 @@ struct ContentView: View {
         .padding(.bottom, 8)
     }
     
-    // MARK: - File Import Section with Real Import Functionality
+    // MARK: - File Import Section
     private var fileImportSection: some View {
         VStack(spacing: 16) {
-            Text("Import Files")
+            Text("Media & LUTs")
                 .font(.headline)
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Video Import Button with corrected signature
-            ImportButton(
-                title: "Import Videos",
-                subtitle: videoCount == 0 ? "No videos selected" : "\(videoCount) video(s) selected",
-                systemImage: "video.fill",
-                isSelected: videoCount > 0
-            ) {
-                fileImportManager.isShowingVideoPicker = true
+            VStack(spacing: 12) {
+                // Video Import Button - Single video only using PhotosPicker
+                PhotosPicker(
+                    selection: $selectedVideoItems,
+                    maxSelectionCount: 1,
+                    matching: .videos
+                ) {
+                    HStack {
+                        VStack(spacing: 8) {
+                            Image(systemName: "video.fill")
+                                .font(.title2)
+                                .foregroundStyle(videoCount > 0 ? .white : .blue)
+                            
+                            VStack(spacing: 4) {
+                                Text("Import Video")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(videoCount > 0 ? .white : .primary)
+                                
+                                Text(videoCount == 0 ? "No video selected" : "Video selected: \(videoURLs.first?.lastPathComponent ?? "")")
+                                    .font(.caption)
+                                    .foregroundStyle(videoCount > 0 ? .white.opacity(0.8) : .secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(videoCount > 0 ? AnyShapeStyle(Color.blue.gradient) : AnyShapeStyle(Color(.systemGray6)))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .stroke(videoCount > 0 ? .clear : .blue.opacity(0.3), lineWidth: 1)
+                                )
+                        )
+                    }
+                }
+                
+                // Primary LUT Selection - Now Optional
+                VStack(spacing: 8) {
+                    Button {
+                        print("🔥 ContentView: PRIMARY LUT BUTTON TAPPED")
+                        print("🔥 ContentView: Setting isShowingLUTPicker = true")
+                        fileImportManager.isShowingLUTPicker = true
+                    } label: {
+                        HStack {
+                            VStack(spacing: 8) {
+                                Image(systemName: "camera.filters")
+                                    .font(.title2)
+                                    .foregroundStyle(lutManager.hasSelectedPrimaryLUT ? .white : .green)
+                                
+                                VStack(spacing: 4) {
+                                    Text("Select Primary LUT")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(lutManager.hasSelectedPrimaryLUT ? .white : .primary)
+                                    
+                                    Text(lutManager.selectedPrimaryLUT?.displayName ?? "Optional - for Log footage")
+                                        .font(.caption)
+                                        .foregroundStyle(lutManager.hasSelectedPrimaryLUT ? .white.opacity(0.8) : .secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                                                     .background(
+                                 RoundedRectangle(cornerRadius: 16)
+                                     .fill(lutManager.hasSelectedPrimaryLUT ? AnyShapeStyle(Color.green.gradient) : AnyShapeStyle(Color(.systemGray6)))
+                                     .overlay(
+                                         RoundedRectangle(cornerRadius: 16)
+                                             .stroke(lutManager.hasSelectedPrimaryLUT ? .clear : .green.opacity(0.3), lineWidth: 1)
+                                     )
+                             )
+                        }
+                    }
+                    
+                    // Primary LUT Opacity Slider
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Primary LUT Opacity")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(Int(projectState.primaryLUTOpacity * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Slider(value: $projectState.primaryLUTOpacity, in: 0...1)
+                            .tint(.green)
+                            .disabled(!lutManager.hasSelectedPrimaryLUT)
+                    }
+                    .padding(.horizontal, 4)
+                    .opacity(lutManager.hasSelectedPrimaryLUT ? 1.0 : 0.5)
+                }
+                
+                // Secondary LUT Selection - Now Optional
+                VStack(spacing: 8) {
+                    Button {
+                        print("🔥 ContentView: SECONDARY LUT BUTTON TAPPED")
+                        print("🔥 ContentView: Setting isShowingSecondaryLUTPicker = true")
+                        fileImportManager.isShowingSecondaryLUTPicker = true
+                    } label: {
+                        HStack {
+                            VStack(spacing: 8) {
+                                Image(systemName: "paintbrush.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(lutManager.hasSelectedSecondaryLUT ? .white : .pink)
+                                
+                                VStack(spacing: 4) {
+                                    Text("Select Secondary LUT")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(lutManager.hasSelectedSecondaryLUT ? .white : .primary)
+                                    
+                                    Text(lutManager.selectedSecondaryLUT?.displayName ?? "Optional - for creative effects")
+                                        .font(.caption)
+                                        .foregroundStyle(lutManager.hasSelectedSecondaryLUT ? .white.opacity(0.8) : .secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                                                     .background(
+                                 RoundedRectangle(cornerRadius: 16)
+                                     .fill(lutManager.hasSelectedSecondaryLUT ? AnyShapeStyle(Color.pink.gradient) : AnyShapeStyle(Color(.systemGray6)))
+                                     .overlay(
+                                         RoundedRectangle(cornerRadius: 16)
+                                             .stroke(lutManager.hasSelectedSecondaryLUT ? .clear : .pink.opacity(0.3), lineWidth: 1)
+                                     )
+                             )
+                        }
+                    }
+                    
+                    // Secondary LUT Opacity Slider
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Secondary LUT Opacity")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(Int(projectState.secondLUTOpacity * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Slider(value: $projectState.secondLUTOpacity, in: 0...1)
+                            .tint(.pink)
+                            .disabled(!lutManager.hasSelectedSecondaryLUT)
+                    }
+                    .padding(.horizontal, 4)
+                    .opacity(lutManager.hasSelectedSecondaryLUT ? 1.0 : 0.5)
+                }
             }
-            
-            // Primary LUT Import Button
-            ImportButton(
-                title: "Primary LUT",
-                subtitle: lutSelected ? primaryLUTURL?.lastPathComponent ?? "LUT selected" : "No LUT selected",
-                systemImage: "camera.filters",
-                isSelected: lutSelected
-            ) {
-                fileImportManager.isShowingLUTPicker = true
-            }
-            
-            // Secondary LUT Import Button
-            ImportButton(
-                title: "Secondary LUT (Optional)",
-                subtitle: secondaryLutSelected ? secondaryLUTURL?.lastPathComponent ?? "LUT selected" : "No secondary LUT",
-                systemImage: "camera.filters",
-                isSelected: secondaryLutSelected
-            ) {
-                fileImportManager.isShowingSecondaryLUTPicker = true
-            }
+        }
+        .padding(.horizontal)
+        .sheet(isPresented: $fileImportManager.isShowingLUTPicker) {
+            LUTSelectorView(
+                lutManager: lutManager,
+                fileImportManager: fileImportManager,
+                isSecondary: false
+            )
+        }
+        .sheet(isPresented: $fileImportManager.isShowingSecondaryLUTPicker) {
+            LUTSelectorView(
+                lutManager: lutManager,
+                fileImportManager: fileImportManager,
+                isSecondary: true
+            )
         }
     }
     
@@ -236,20 +373,43 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             
             VStack(spacing: 12) {
-                // Opacity Slider (only visible when secondary LUT is selected)
-                if secondaryLutSelected {
+                // Primary LUT Opacity Slider (visible when primary LUT is selected)
+                if lutManager.selectedPrimaryLUT != nil {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Primary LUT Opacity")
+                                .font(.subheadline)
+                            Spacer()
+                            Text("\(Int(projectState.primaryLUTOpacity * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Slider(value: $projectState.primaryLUTOpacity, in: 0...1)
+                            .tint(.green)
+                    }
+                    .padding(16)
+                    .background(
+                        .regularMaterial,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                
+                // Secondary LUT Opacity Slider (visible when secondary LUT is selected)
+                if lutManager.selectedSecondaryLUT != nil {
                     VStack(alignment: .leading) {
                         HStack {
                             Text("Secondary LUT Opacity")
                                 .font(.subheadline)
                             Spacer()
-                            Text("100%")
+                            Text("\(Int(projectState.secondLUTOpacity * 100))%")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         
-                        Slider(value: .constant(1.0), in: 0...1)
-                            .tint(.blue)
+                        Slider(value: $projectState.secondLUTOpacity, in: 0...1)
+                            .tint(.pink)
                     }
                     .padding(16)
                     .background(
@@ -265,12 +425,12 @@ struct ContentView: View {
                         Text("White Balance")
                             .font(.subheadline)
                         Spacer()
-                        Text("5500K")
+                        Text(projectState.formattedWhiteBalance)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     
-                    Slider(value: .constant(0.0), in: -10...10)
+                    Slider(value: $projectState.whiteBalanceValue, in: -10...10)
                         .tint(.orange)
                 }
                 .padding(16)
@@ -295,7 +455,7 @@ struct ContentView: View {
                 Text("Processing Mode")
                     .font(.subheadline)
                 
-                Picker("Processing Mode", selection: .constant(true)) {
+                Picker("Processing Mode", selection: $projectState.useGPU) {
                     Text("CPU").tag(false)
                     Text("GPU").tag(true)
                 }
@@ -309,13 +469,22 @@ struct ContentView: View {
             
             // Export Button
             Button(action: {
-                // TODO: Implement export functionality
+                print("🎬 Exporting video...")
+                if let primaryLUT = lutManager.selectedPrimaryLUT {
+                    print("📹 Primary LUT: \(primaryLUT.displayName)")
+                }
+                if let secondaryLUT = lutManager.selectedSecondaryLUT {
+                    print("🎨 Secondary LUT: \(secondaryLUT.displayName) (Opacity: \(Int(projectState.secondLUTOpacity * 100))%)")
+                }
+                if lutManager.selectedPrimaryLUT == nil && lutManager.selectedSecondaryLUT == nil {
+                    print("📱 Exporting without LUT (original video)")
+                }
             }) {
                 HStack {
                     Image(systemName: "square.and.arrow.up")
                         .font(.title3)
                     
-                    Text("Export Videos")
+                    Text("Export Video")
                         .font(.headline)
                         .fontWeight(.semibold)
                 }
@@ -323,12 +492,12 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .padding(16)
                 .background(
-                    (videoCount > 0 && lutSelected) ? Color.blue.gradient : Color.gray.gradient,
+                    videoCount > 0 ? Color.blue.gradient : Color.gray.gradient,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
             }
             .buttonStyle(.plain)
-            .disabled(videoCount == 0 || !lutSelected)
+            .disabled(videoCount == 0)
         }
     }
     
@@ -389,8 +558,15 @@ struct ContentView: View {
     
     // MARK: - Prominent Video Preview
     private var prominentVideoPreview: some View {
-        VideoPreviewView()
+        VideoPreviewView(onImportVideoTapped: triggerVideoImport)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    // MARK: - Helper Methods
+    private func triggerVideoImport() {
+        // This will trigger the PhotosPicker by clearing and setting the selection
+        selectedVideoItems = []
+        // The PhotosPicker will be triggered by the PhotosPicker in the file import section
     }
 }
 

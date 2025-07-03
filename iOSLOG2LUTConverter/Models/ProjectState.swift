@@ -59,23 +59,35 @@ class ProjectState: ObservableObject {
     }
     
     private func loadTestVideo() {
-        // For development, use the actual file path
+        // Try compatible test video first (iOS-friendly 8-bit H.264)
+        let compatibleVideoPath = "/Users/raamasrivatsan/xcode/iOSLOG2LUTConverter/iOSLOG2LUTConverter/Resources/testfootage/test_compatible.mp4"
+        let compatibleVideoURL = URL(fileURLWithPath: compatibleVideoPath)
+        
+        if FileManager.default.fileExists(atPath: compatibleVideoPath) {
+            print("✅ Debug Mode: Loading compatible test video from \(compatibleVideoURL.path)")
+            addVideoURL(compatibleVideoURL)
+            return
+        }
+        
+        // Fallback to original video (may have compatibility issues)
         let testVideoPath = "/Users/raamasrivatsan/xcode/iOSLOG2LUTConverter/iOSLOG2LUTConverter/Resources/testfootage/test.MP4"
         let testVideoURL = URL(fileURLWithPath: testVideoPath)
         
-        // Check if file exists
         if FileManager.default.fileExists(atPath: testVideoPath) {
-            print("✅ Debug Mode: Loading test video from \(testVideoURL.path)")
+            print("⚠️ Debug Mode: Loading original test video (may have compatibility issues) from \(testVideoURL.path)")
             addVideoURL(testVideoURL)
         } else {
             // Try bundle resource as fallback
-            if let bundleURL = Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "Resources/testfootage") ??
+            if let bundleURL = Bundle.main.url(forResource: "test_compatible", withExtension: "mp4", subdirectory: "Resources/testfootage") ??
+                              Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "Resources/testfootage") ??
                               Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "Resources/testfootage") {
                 print("✅ Debug Mode: Loading test video from bundle: \(bundleURL.path)")
                 addVideoURL(bundleURL)
             } else {
-                print("❌ Debug Mode: test video not found at \(testVideoPath)")
-                print("❌ Debug Mode: Also not found in bundle Resources/testfootage/")
+                print("❌ Debug Mode: No test video found")
+                print("❌ Tried: \(compatibleVideoPath)")
+                print("❌ Tried: \(testVideoPath)")
+                print("❌ Also not found in bundle Resources/testfootage/")
             }
         }
     }

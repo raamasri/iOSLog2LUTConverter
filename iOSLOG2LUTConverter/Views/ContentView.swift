@@ -580,10 +580,10 @@ struct ContentView: View {
             if showingSaveToPhotos {
                 Button(action: saveToPhotos) {
                     HStack {
-                        Image(systemName: "photo.badge.plus")
+                        Image(systemName: isSavedToPhotos ? "checkmark.circle.fill" : "photo.badge.plus")
                             .font(.title3)
                         
-                        Text("Save to Photos")
+                        Text(isSavedToPhotos ? "Saved to Photos!" : "Save to Photos")
                             .font(.headline)
                             .fontWeight(.semibold)
                     }
@@ -591,11 +591,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .padding(16)
                     .background(
-                        Color.green.gradient,
+                        isSavedToPhotos ? Color.blue.gradient : Color.green.gradient,
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(isSavedToPhotos)
                 .transition(.scale.combined(with: .opacity))
             }
             
@@ -672,6 +673,27 @@ struct ContentView: View {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
             }
+            
+            // Save to Photos confirmation message
+            if !saveToPhotosMessage.isEmpty {
+                HStack {
+                    Image(systemName: isSavedToPhotos ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(isSavedToPhotos ? .green : .red)
+                    
+                    Text(saveToPhotosMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Spacer()
+                }
+                .padding(12)
+                .background(
+                    .thinMaterial,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .transition(.opacity.combined(with: .scale))
+            }
         }
     }
     
@@ -741,6 +763,8 @@ struct ContentView: View {
     @State private var exportProgress: Double = 0.0
     @State private var exportStatusMessage = ""
     @State private var isConversionComplete = false
+    @State private var isSavedToPhotos = false
+    @State private var saveToPhotosMessage = ""
     
     private func exportVideo() {
         guard videoCount > 0, let videoURL = videoURLs.first else {
@@ -955,25 +979,30 @@ struct ContentView: View {
                             if success {
                                 print("✅ Video saved to Photos successfully!")
                                 projectState.updateStatus("Video saved to Photos")
-                                // Keep the save button visible - don't hide it
+                                self.isSavedToPhotos = true
+                                self.saveToPhotosMessage = "✅ Video successfully saved to Photos!"
                             } else {
                                 print("❌ Failed to save video to Photos: \(error?.localizedDescription ?? "Unknown error")")
                                 if let error = error {
                                     print("❌ Error details: \(error)")
                                 }
                                 projectState.updateStatus("Failed to save to Photos")
+                                self.saveToPhotosMessage = "❌ Failed to save to Photos: \(error?.localizedDescription ?? "Unknown error")"
                             }
                         }
                     }
                 case .denied, .restricted:
                     print("❌ Photos access denied")
                     projectState.updateStatus("Photos access denied")
+                    self.saveToPhotosMessage = "❌ Photos access denied. Please enable in Settings."
                 case .notDetermined:
                     print("❌ Photos access not determined")
                     projectState.updateStatus("Photos access required")
+                    self.saveToPhotosMessage = "❌ Photos access required. Please grant permission."
                 @unknown default:
                     print("❌ Unknown Photos authorization status")
                     projectState.updateStatus("Photos access error")
+                    self.saveToPhotosMessage = "❌ Photos access error occurred."
                 }
             }
         }
@@ -987,6 +1016,8 @@ struct ContentView: View {
         isConversionComplete = false
         showingSaveToPhotos = false
         exportedVideoURL = nil
+        isSavedToPhotos = false
+        saveToPhotosMessage = ""
         
         // Clear video and LUT selections
         videoURLs = []

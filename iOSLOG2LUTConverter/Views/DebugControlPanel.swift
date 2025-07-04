@@ -238,24 +238,6 @@ struct DebugControlPanel: View {
                 Slider(value: $projectState.secondLUTOpacity, in: 0...1)
                     .tint(.pink)
             }
-            
-            // CPU/GPU Toggle
-            HStack {
-                Text("Processing Mode")
-                Spacer()
-                Picker("", selection: $projectState.useGPU) {
-                    Text("CPU").tag(false)
-                    Text("GPU").tag(true)
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .frame(width: 150)
-                
-                Button("Random") {
-                    projectState.useGPU = Bool.random()
-                    addLog("🎲 Randomized processing mode: \(projectState.useGPU ? "GPU" : "CPU")")
-                }
-                .font(.caption)
-            }
         }
         .padding()
         .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 16))
@@ -326,9 +308,6 @@ struct DebugControlPanel: View {
                     Text("🎭 Secondary: \(secondary.displayName) (\(Int(projectState.secondLUTOpacity * 100))%)")
                         .font(.caption2)
                 }
-                
-                Text("⚙️ Mode: \(projectState.useGPU ? "GPU" : "CPU")")
-                    .font(.caption2)
             }
             .padding()
             .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 8))
@@ -407,7 +386,6 @@ struct DebugControlPanel: View {
             // Step 5: Randomize settings
             updateTestProgress(0.5, "Randomizing settings...")
             projectState.whiteBalanceValue = Float.random(in: -5...5)
-            projectState.useGPU = Bool.random()
             try? await Task.sleep(nanoseconds: 500_000_000)
             
             // Step 6: Generate preview
@@ -437,7 +415,6 @@ struct DebugControlPanel: View {
             randomizePrimaryOpacity()
             randomizeSecondaryOpacity()
             projectState.whiteBalanceValue = Float.random(in: -10...10)
-            projectState.useGPU = Bool.random()
             projectState.exportQuality = ExportQuality.allCases.randomElement() ?? .high
         }
         
@@ -489,7 +466,6 @@ struct DebugControlPanel: View {
     
     private func testExport() {
         addLog("📤 Starting test export...")
-        addLog("⚙️ GPU: \(projectState.useGPU ? "Enabled" : "Disabled")")
         addLog("📊 Quality: \(projectState.exportQuality.rawValue)")
         
         // The actual export is handled by ContentView's exportVideo method
@@ -538,7 +514,6 @@ struct DebugControlPanel: View {
         addLog("Videos: \(projectState.videoURLs.count)")
         addLog("Primary LUT: \(lutManager.selectedPrimaryLUT?.displayName ?? "None")")
         addLog("Secondary LUT: \(lutManager.selectedSecondaryLUT?.displayName ?? "None")")
-        addLog("GPU Mode: \(projectState.useGPU)")
         addLog("Export Quality: \(projectState.exportQuality.rawValue)")
         showingLogs = true
     }

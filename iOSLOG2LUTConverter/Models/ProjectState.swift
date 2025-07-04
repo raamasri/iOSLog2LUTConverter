@@ -14,8 +14,10 @@ class ProjectState: ObservableObject {
     @Published var secondaryLUTURL: URL?
     @Published var primaryLUTOpacity: Float = 1.0
     @Published var secondLUTOpacity: Float = 1.0
-    @Published var useGPU: Bool = true
     @Published var whiteBalanceValue: Float = 0.0
+    
+    // GPU processing is always enabled (no user toggle)
+    var useGPU: Bool { return true }
     
     // MARK: - iOS-Specific Properties
     @Published var isExporting: Bool = false
@@ -676,7 +678,6 @@ class ProjectState: ObservableObject {
     
     func optimizeForBattery() {
         if shouldOptimizeForBattery {
-            useGPU = false
             exportQuality = .medium
             updateStatus("Optimized for battery life")
         }
@@ -686,7 +687,6 @@ class ProjectState: ObservableObject {
         primaryLUTOpacity = 1.0
         secondLUTOpacity = 1.0
         whiteBalanceValue = 0.0
-        useGPU = true
         exportQuality = .high
         shouldOptimizeForBattery = true
         updateStatus("Reset to defaults")

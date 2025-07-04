@@ -643,27 +643,6 @@ struct ContentView: View {
                 .transition(.scale.combined(with: .opacity))
             }
             
-            // GPU Processing Toggle
-            VStack(alignment: .leading) {
-                Text("Hardware Acceleration")
-                    .font(.subheadline)
-                
-                Picker("Processing Mode", selection: $projectState.useGPU) {
-                    Text("CPU").tag(false)
-                    Text("GPU").tag(true)
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .onChange(of: projectState.useGPU) { _, newValue in
-                    print("⚙️ Hardware Acceleration Changed: \(newValue ? "GPU" : "CPU") Processing")
-                    print("🔧 GPU Acceleration: \(newValue ? "ENABLED" : "DISABLED")")
-                }
-            }
-            .padding(16)
-            .background(
-                .regularMaterial,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            
             // Export Quality Selector
             VStack(alignment: .leading) {
                 Text("Export Quality")

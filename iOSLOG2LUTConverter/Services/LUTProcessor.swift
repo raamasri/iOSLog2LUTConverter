@@ -710,37 +710,44 @@ class LUTProcessor: ObservableObject {
         print("   - Input image extent: \(image.extent)")
         print("   - Primary LUT: \(primaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
         print("   - Secondary LUT: \(secondaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
-        
-        // Apply white balance adjustment first
-        if settings.whiteBalanceAdjustment != 0 {
-            processedImage = applyWhiteBalanceAdjustment(processedImage, adjustment: settings.whiteBalanceAdjustment)
-            print("   - White balance applied: \(settings.whiteBalanceAdjustment)")
-        }
+        print("   - Processing order: Original → Primary LUT → White Balance → Secondary LUT")
         
         // Apply primary LUT with opacity support
         if let primaryFilter = primaryLUTFilter {
             primaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let primaryOutput = primaryFilter.outputImage {
-                // Handle primary LUT opacity (though typically this would be 1.0)
+                // Handle primary LUT opacity using proper blending
                 if settings.primaryLUTOpacity < 1.0 {
-                    // Use CIBlendWithMask for primary LUT opacity
-                    if let blendFilter = CIFilter(name: "CIBlendWithMask") {
-                        let maskColor = CIColor(red: CGFloat(settings.primaryLUTOpacity), 
-                                              green: CGFloat(settings.primaryLUTOpacity), 
-                                              blue: CGFloat(settings.primaryLUTOpacity), 
-                                              alpha: 1.0)
-                        let maskImage = CIImage(color: maskColor).cropped(to: processedImage.extent)
-                        
-                        blendFilter.setValue(primaryOutput, forKey: kCIInputImageKey)
-                        blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                        blendFilter.setValue(maskImage, forKey: kCIInputMaskImageKey)
-                        
-                        if let blendedOutput = blendFilter.outputImage {
-                            processedImage = blendedOutput
-                            print("   - ✅ Primary LUT applied with \(Int(settings.primaryLUTOpacity * 100))% opacity")
+                    // Use CISourceOverCompositing for proper opacity blending
+                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
+                        // First, apply opacity to the LUT output using CIColorMatrix
+                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
+                            opacityFilter.setValue(primaryOutput, forKey: kCIInputImageKey)
+                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.primaryLUTOpacity)), forKey: "inputAVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+                            
+                            if let opacityOutput = opacityFilter.outputImage {
+                                // Now blend the opacity-adjusted LUT output over the original
+                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
+                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
+                                
+                                if let blendedOutput = blendFilter.outputImage {
+                                    processedImage = blendedOutput
+                                    print("   - ✅ Primary LUT applied with \(Int(settings.primaryLUTOpacity * 100))% opacity")
+                                } else {
+                                    processedImage = primaryOutput
+                                    print("   - ❌ Primary LUT blend failed, using full opacity")
+                                }
+                            } else {
+                                processedImage = primaryOutput
+                                print("   - ❌ Primary LUT opacity adjustment failed, using full opacity")
+                            }
                         } else {
                             processedImage = primaryOutput
-                            print("   - ❌ Primary LUT blend failed, using full opacity")
+                            print("   - ❌ Could not create opacity filter for primary LUT, using full opacity")
                         }
                     } else {
                         processedImage = primaryOutput
@@ -757,34 +764,54 @@ class LUTProcessor: ObservableObject {
             print("   - ⚠️ No primary LUT to apply")
         }
         
+        // Apply white balance adjustment after primary LUT
+        if settings.whiteBalanceAdjustment != 0 {
+            processedImage = applyWhiteBalanceAdjustment(processedImage, adjustment: settings.whiteBalanceAdjustment)
+            let baseTemp = 5500
+            let tempChange = Int(settings.whiteBalanceAdjustment * 280)
+            let finalTemp = baseTemp + tempChange
+            print("   - ✅ White balance applied: \(settings.whiteBalanceAdjustment) (\(finalTemp)K)")
+        }
+        
         // Apply secondary LUT with proper chaining and opacity support
         if let secondaryFilter = secondaryLUTFilter {
             secondaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let secondaryOutput = secondaryFilter.outputImage {
                 // Handle opacity blending
                 if settings.secondaryLUTOpacity < 1.0 {
-                    // Use CIBlendWithMask for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CIBlendWithMask") {
-                        // Create a uniform mask for opacity
-                        let maskColor = CIColor(red: CGFloat(settings.secondaryLUTOpacity), 
-                                              green: CGFloat(settings.secondaryLUTOpacity), 
-                                              blue: CGFloat(settings.secondaryLUTOpacity), 
-                                              alpha: 1.0)
-                        let maskImage = CIImage(color: maskColor).cropped(to: processedImage.extent)
-                        
-                        blendFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
-                        blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                        blendFilter.setValue(maskImage, forKey: kCIInputMaskImageKey)
-                        
-                        if let blendedOutput = blendFilter.outputImage {
-                            processedImage = blendedOutput
-                            print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity")
+                    // Use CISourceOverCompositing for proper opacity blending
+                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
+                        // First, apply opacity to the LUT output using CIColorMatrix
+                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
+                            opacityFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
+                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.secondaryLUTOpacity)), forKey: "inputAVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+                            
+                            if let opacityOutput = opacityFilter.outputImage {
+                                // Now blend the opacity-adjusted LUT output over the original
+                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
+                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
+                                
+                                if let blendedOutput = blendFilter.outputImage {
+                                    processedImage = blendedOutput
+                                    print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity")
+                                } else {
+                                    print("   - ❌ Secondary LUT blend failed, using full opacity")
+                                    processedImage = secondaryOutput
+                                }
+                            } else {
+                                print("   - ❌ Secondary LUT opacity adjustment failed, using full opacity")
+                                processedImage = secondaryOutput
+                            }
                         } else {
-                            print("   - ❌ Secondary LUT blend failed, using full opacity")
+                            print("   - ❌ Could not create opacity filter for secondary LUT, using full opacity")
                             processedImage = secondaryOutput
                         }
                     } else {
-                        print("   - ❌ Could not create blend filter, using full opacity")
+                        print("   - ❌ Could not create blend filter for secondary LUT, using full opacity")
                         processedImage = secondaryOutput
                     }
                 } else {
@@ -813,16 +840,65 @@ class LUTProcessor: ObservableObject {
         print("   - Input image extent: \(image.extent)")
         print("   - Primary LUT: \(primaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
         print("   - Secondary LUT: \(secondaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
+        print("   - Processing order: Original → Primary LUT → White Balance → Secondary LUT")
         
-        // Apply primary LUT directly
+        // Apply primary LUT directly with opacity support
         if let primaryFilter = primaryLUTFilter {
             primaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
-            if let output = primaryFilter.outputImage {
-                processedImage = output
-                print("   - ✅ Primary LUT applied successfully (direct)")
+            if let primaryOutput = primaryFilter.outputImage {
+                // Handle primary LUT opacity
+                if settings.primaryLUTOpacity < 1.0 {
+                    // Use CISourceOverCompositing for proper opacity blending
+                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
+                        // First, apply opacity to the LUT output using CIColorMatrix
+                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
+                            opacityFilter.setValue(primaryOutput, forKey: kCIInputImageKey)
+                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.primaryLUTOpacity)), forKey: "inputAVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+                            
+                            if let opacityOutput = opacityFilter.outputImage {
+                                // Now blend the opacity-adjusted LUT output over the original
+                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
+                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
+                                
+                                if let blendedOutput = blendFilter.outputImage {
+                                    processedImage = blendedOutput
+                                    print("   - ✅ Primary LUT applied with \(Int(settings.primaryLUTOpacity * 100))% opacity (direct)")
+                                } else {
+                                    processedImage = primaryOutput
+                                    print("   - ❌ Primary LUT blend failed, using full opacity (direct)")
+                                }
+                            } else {
+                                processedImage = primaryOutput
+                                print("   - ❌ Primary LUT opacity adjustment failed, using full opacity (direct)")
+                            }
+                        } else {
+                            processedImage = primaryOutput
+                            print("   - ❌ Could not create opacity filter for primary LUT, using full opacity (direct)")
+                        }
+                    } else {
+                        processedImage = primaryOutput
+                        print("   - ❌ Could not create blend filter for primary LUT, using full opacity (direct)")
+                    }
+                } else {
+                    processedImage = primaryOutput
+                    print("   - ✅ Primary LUT applied successfully (direct)")
+                }
             } else {
                 print("   - ❌ Primary LUT failed to generate output")
             }
+        }
+        
+        // Apply white balance adjustment after primary LUT
+        if settings.whiteBalanceAdjustment != 0 {
+            processedImage = applyWhiteBalanceAdjustment(processedImage, adjustment: settings.whiteBalanceAdjustment)
+            let baseTemp = 5500
+            let tempChange = Int(settings.whiteBalanceAdjustment * 280)
+            let finalTemp = baseTemp + tempChange
+            print("   - ✅ White balance applied: \(settings.whiteBalanceAdjustment) (\(finalTemp)K) (direct)")
         }
         
         // Apply secondary LUT directly with opacity support
@@ -834,26 +910,36 @@ class LUTProcessor: ObservableObject {
                     processedImage = secondaryOutput
                     print("   - ✅ Secondary LUT applied at 100% opacity (direct)")
                 } else {
-                    // Use CIBlendWithMask for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CIBlendWithMask") {
-                        let maskColor = CIColor(red: CGFloat(settings.secondaryLUTOpacity), 
-                                              green: CGFloat(settings.secondaryLUTOpacity), 
-                                              blue: CGFloat(settings.secondaryLUTOpacity), 
-                                              alpha: 1.0)
-                        let maskImage = CIImage(color: maskColor).cropped(to: processedImage.extent)
-                        
-                        blendFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
-                        blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                        blendFilter.setValue(maskImage, forKey: kCIInputMaskImageKey)
-                        
-                        if let blendedOutput = blendFilter.outputImage {
-                            processedImage = blendedOutput
-                            print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity (direct)")
+                    // Use CISourceOverCompositing for proper opacity blending
+                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
+                        // First, apply opacity to the LUT output using CIColorMatrix
+                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
+                            opacityFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
+                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.secondaryLUTOpacity)), forKey: "inputAVector")
+                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+                            
+                            if let opacityOutput = opacityFilter.outputImage {
+                                // Now blend the opacity-adjusted LUT output over the original
+                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
+                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
+                                
+                                if let blendedOutput = blendFilter.outputImage {
+                                    processedImage = blendedOutput
+                                    print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity (direct)")
+                                } else {
+                                    print("   - ❌ Secondary LUT blend failed, using primary only")
+                                }
+                            } else {
+                                print("   - ❌ Secondary LUT opacity adjustment failed, using primary only")
+                            }
                         } else {
-                            print("   - ❌ Secondary LUT blend failed, using primary only")
+                            print("   - ❌ Could not create opacity filter for secondary LUT, using primary only")
                         }
                     } else {
-                        print("   - ❌ Could not create blend filter, using primary only")
+                        print("   - ❌ Could not create blend filter for secondary LUT, using primary only")
                     }
                 }
             } else {

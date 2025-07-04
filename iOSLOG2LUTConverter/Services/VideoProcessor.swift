@@ -88,7 +88,7 @@ class VideoProcessor: ObservableObject {
             return
         }
         
-        guard config.primaryLUTURL != nil else {
+        guard config.primaryLUTURL != nil || config.secondaryLUTURL != nil else {
             await handleError(.noLUTSelected)
             return
         }

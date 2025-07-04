@@ -101,6 +101,10 @@ struct ContentView: View {
             print("🎭 Secondary LUT opacity changed to \(Int(newOpacity * 100))% - Regenerating preview...")
             projectState.generatePreview()
         }
+        .onChange(of: projectState.whiteBalanceValue) { _, newValue in
+            print("🌡️ White balance changed to \(projectState.formattedWhiteBalance) - Regenerating preview...")
+            projectState.generatePreview()
+        }
         // Update video URLs when test video is loaded
         .onChange(of: projectState.videoURLs) { _, newURLs in
             self.videoURLs = newURLs
@@ -340,6 +344,23 @@ struct ContentView: View {
                     .padding(.horizontal, 4)
                     .opacity(lutManager.hasSelectedPrimaryLUT ? 1.0 : 0.5)
                 }
+                
+                // White Balance Slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("White Balance")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(projectState.formattedWhiteBalance)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Slider(value: $projectState.whiteBalanceValue, in: -10...10)
+                        .tint(.orange)
+                }
+                .padding(.horizontal, 4)
                 
                 // Secondary LUT Selection - Now Optional
                 VStack(spacing: 8) {

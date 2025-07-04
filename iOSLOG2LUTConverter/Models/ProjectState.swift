@@ -27,12 +27,38 @@ class ProjectState: ObservableObject {
     @Published var previewImage: UIImage?
     @Published var rawPreviewImage: UIImage? // Raw preview without LUTs
     @Published var statusMessage: String = "Ready to import videos"
-    @Published var showBeforeAfter: Bool = false // Toggle for before/after view
     
     // MARK: - Video Scrubbing Properties
     @Published var currentTime: Double = 0.0 // Current scrub position in seconds
     @Published var videoDuration: Double = 0.0 // Total video duration in seconds
-    @Published var isScrubbing: Bool = false // Whether user is actively scrubbing
+    @Published var isScrubbing: Bool = false // True when actively scrubbing timeline
+    
+    // MARK: - Before/After Comparison Properties
+    @Published var showBeforeAfter: Bool = false // Toggle for before/after view
+    @Published var beforeAfterMode: BeforeAfterMode = .sideBySide // Comparison display mode
+    @Published var beforeAfterSplit: Double = 0.5 // Split position for overlay mode (0.0 to 1.0)
+    
+    enum BeforeAfterMode: String, CaseIterable {
+        case sideBySide = "side_by_side"
+        case verticalSplit = "vertical_split"
+        case toggle = "toggle"
+        
+        var displayName: String {
+            switch self {
+            case .sideBySide: return "Side by Side"
+            case .verticalSplit: return "Vertical Split"
+            case .toggle: return "A/B Toggle"
+            }
+        }
+        
+        var icon: String {
+            switch self {
+            case .sideBySide: return "rectangle.split.2x1"
+            case .verticalSplit: return "rectangle.split.1x2"
+            case .toggle: return "arrow.left.arrow.right"
+            }
+        }
+    }
     
     // MARK: - Background Processing
     @Published var backgroundExportProgress: [String: Double] = [:]
@@ -219,10 +245,11 @@ class ProjectState: ObservableObject {
             do {
                 let videoURL = videoURLs[0]
                 
-                // Generate raw preview at specific time
+                // Always generate raw preview for before/after comparison
                 let rawPreview = try await generateRawPreviewAtTime(videoURL: videoURL, timeSeconds: timeSeconds)
                 
                 // Generate LUT-processed preview if LUTs are selected
+                let processedPreview: UIImage
                 if primaryLUTURL != nil || secondaryLUTURL != nil {
                     let videoProcessor = VideoProcessor()
                     
@@ -247,27 +274,24 @@ class ProjectState: ObservableObject {
                         outputDirectory: FileManager.default.temporaryDirectory
                     )
                     
-                    let processedPreview = try await videoProcessor.generatePreviewAtTime(
+                    processedPreview = try await videoProcessor.generatePreviewAtTime(
                         videoURL: videoURL, 
                         timeSeconds: timeSeconds, 
                         settings: settings
                     )
                     
-                    await MainActor.run {
-                        self.rawPreviewImage = rawPreview
-                        self.previewImage = processedPreview
-                        self.isPreviewLoading = false
-                        self.isScrubbing = false
-                        print("✅ Preview generated at \(timeSeconds)s with LUTs")
-                    }
+                    print("✅ Preview generated at \(timeSeconds)s with LUTs")
                 } else {
-                    await MainActor.run {
-                        self.rawPreviewImage = rawPreview
-                        self.previewImage = rawPreview
-                        self.isPreviewLoading = false
-                        self.isScrubbing = false
-                        print("✅ Raw preview generated at \(timeSeconds)s")
-                    }
+                    // If no LUTs, processed preview is same as raw
+                    processedPreview = rawPreview
+                    print("✅ Raw preview generated at \(timeSeconds)s (no LUTs)")
+                }
+                
+                await MainActor.run {
+                    self.rawPreviewImage = rawPreview
+                    self.previewImage = processedPreview
+                    self.isPreviewLoading = false
+                    self.isScrubbing = false
                 }
                 
             } catch {

@@ -699,7 +699,10 @@ struct ContentView: View {
                             .font(.title3)
                     }
                     
-                    Text(isExporting ? "Converting..." : (isConversionComplete ? "Converted!" : "Convert Video"))
+                    Text(isExporting ? 
+                         (projectState.batchMode ? "Processing Batch..." : "Converting...") : 
+                         (isConversionComplete ? "Converted!" : 
+                          (projectState.batchMode ? "Process Batch" : "Convert Video")))
                         .font(.headline)
                         .fontWeight(.semibold)
                 }
@@ -708,12 +711,12 @@ struct ContentView: View {
                 .padding(16)
                 .background(
                     isConversionComplete ? Color.green.gradient : 
-                    (videoCount > 0 && !isExporting) ? Color.blue.gradient : Color.gray.gradient,
+                    ((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) && !isExporting) ? Color.blue.gradient : Color.gray.gradient,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
             }
             .buttonStyle(.plain)
-            .disabled(videoCount == 0 || isExporting)
+            .disabled((projectState.batchMode ? projectState.batchQueue.isEmpty : videoCount == 0) || isExporting)
             
             // Save to Photos Button (shown after export)
             if showingSaveToPhotos {
@@ -906,6 +909,25 @@ struct ContentView: View {
     @State private var saveToPhotosMessage = ""
     
     private func exportVideo() {
+        // Check if batch mode is enabled
+        if projectState.batchMode {
+            // Handle batch processing
+            guard !projectState.batchQueue.isEmpty else {
+                print("❌ Batch Export: No videos in batch queue")
+                projectState.updateStatus("No videos in batch queue")
+                return
+            }
+            
+            print("📦 Starting batch processing...")
+            print("📹 Videos in queue: \(projectState.batchQueue.count)")
+            
+            Task {
+                await projectState.startBatchProcessing()
+            }
+            return
+        }
+        
+        // Handle single video processing
         guard videoCount > 0, let videoURL = videoURLs.first else {
             print("❌ Export: No video selected")
             return

@@ -55,10 +55,6 @@ struct BatchProcessingView: View {
                     .fontWeight(.semibold)
                 
                 Spacer()
-                
-                // Batch mode toggle
-                Toggle("Batch Mode", isOn: $projectState.batchMode)
-                    .toggleStyle(SwitchToggleStyle())
             }
             
             Text(projectState.batchProcessingStatusMessage)
@@ -160,59 +156,40 @@ struct BatchProcessingView: View {
     
     // MARK: - Controls Section
     private var controlsSection: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                // Add Videos Button
-                Button(action: {
-                    showingFilePicker = true
-                }) {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Videos")
-                    }
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .cornerRadius(12)
-                }
-                .disabled(projectState.isBatchProcessing)
-                
-                // Clear Queue Button
-                Button(action: {
-                    projectState.clearBatchQueue()
-                }) {
-                    HStack {
-                        Image(systemName: "trash.circle.fill")
-                        Text("Clear")
-                    }
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.red)
-                    .cornerRadius(12)
-                }
-                .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
-            }
-            
-            // Start Processing Button
+        HStack(spacing: 12) {
+            // Add Videos Button
             Button(action: {
-                startBatchProcessing()
+                showingFilePicker = true
             }) {
                 HStack {
-                    Image(systemName: projectState.isBatchProcessing ? "stop.circle.fill" : "play.circle.fill")
-                    Text(projectState.isBatchProcessing ? "Stop Processing" : "Start Batch Processing")
+                    Image(systemName: "plus.circle.fill")
+                    Text("Add Videos")
                 }
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(projectState.isBatchProcessing ? Color.orange : Color.green)
+                .background(Color.blue)
                 .cornerRadius(12)
             }
-            .disabled(projectState.batchQueue.isEmpty || (projectState.primaryLUTURL == nil && projectState.secondaryLUTURL == nil))
+            .disabled(projectState.isBatchProcessing)
+            
+            // Clear Queue Button
+            Button(action: {
+                projectState.clearBatchQueue()
+            }) {
+                HStack {
+                    Image(systemName: "trash.circle.fill")
+                    Text("Clear")
+                }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.red)
+                .cornerRadius(12)
+            }
+            .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
         }
     }
     
@@ -226,18 +203,6 @@ struct BatchProcessingView: View {
         case .failure(let error):
             alertMessage = "Failed to import videos: \(error.localizedDescription)"
             showingAlert = true
-        }
-    }
-    
-    private func startBatchProcessing() {
-        if projectState.isBatchProcessing {
-            // TODO: Implement stop functionality
-            alertMessage = "Stop functionality not yet implemented"
-            showingAlert = true
-        } else {
-            Task {
-                await projectState.startBatchProcessing()
-            }
         }
     }
 }

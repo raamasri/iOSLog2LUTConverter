@@ -219,6 +219,9 @@ struct ContentView: View {
             // App Title with Apple Typography
             appTitle
             
+            // Processing Mode Toggle - Moved to top for better UX
+            processingModeSection
+            
             // File Import Section with Real Import Functionality
             fileImportSection
             
@@ -277,6 +280,45 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(.bottom, 8)
+    }
+    
+    // MARK: - Processing Mode Section
+    private var processingModeSection: some View {
+        VStack(spacing: 16) {
+            Text("Processing Mode")
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            VStack(alignment: .leading) {
+                Picker("Processing Mode", selection: $projectState.batchMode) {
+                    Text("Single Video").tag(false)
+                    Text("Batch Processing").tag(true)
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .onChange(of: projectState.batchMode) { _, newValue in
+                    print("📦 Processing Mode Changed: \(newValue ? "Batch" : "Single") Processing")
+                    // Clear videos when switching modes to avoid confusion
+                    if newValue {
+                        // Switching to batch mode - clear single video selection
+                        videoURLs = []
+                        videoCount = 0
+                        selectedVideoItems = []
+                    } else {
+                        // Switching to single mode - clear batch queue
+                        projectState.clearBatchQueue()
+                        videoURLs = []
+                        videoCount = 0
+                        selectedVideoItems = []
+                    }
+                }
+            }
+            .padding(16)
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+        }
     }
     
     // MARK: - File Import Section
@@ -565,26 +607,6 @@ struct ContentView: View {
                 .font(.headline)
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            
-            // Batch Processing Toggle
-            VStack(alignment: .leading) {
-                Text("Processing Mode")
-                    .font(.subheadline)
-                
-                Picker("Processing Mode", selection: $projectState.batchMode) {
-                    Text("Single Video").tag(false)
-                    Text("Batch Processing").tag(true)
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .onChange(of: projectState.batchMode) { _, newValue in
-                    print("📦 Processing Mode Changed: \(newValue ? "Batch" : "Single") Processing")
-                }
-            }
-            .padding(16)
-            .background(
-                .regularMaterial,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
             
             // Batch Processing Button (shown when batch mode is enabled)
             if projectState.batchMode {

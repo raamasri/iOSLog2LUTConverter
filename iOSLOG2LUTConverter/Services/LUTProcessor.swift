@@ -12,14 +12,14 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
     private var secondaryLUTFilter: CIFilter?
     private var lutSettings: [String: Any] = [:]
     
-    var sourcePixelBufferAttributes: [String : Any]? {
+    nonisolated var sourcePixelBufferAttributes: [String : Any]? {
         return [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
             kCVPixelBufferMetalCompatibilityKey as String: true
         ]
     }
     
-    var requiredPixelBufferAttributesForRenderContext: [String : Any] {
+    nonisolated var requiredPixelBufferAttributesForRenderContext: [String : Any] {
         return [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
             kCVPixelBufferMetalCompatibilityKey as String: true
@@ -61,7 +61,7 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
     private func loadLUTFiltersFromComposition(_ composition: AVVideoComposition?) {
         guard let composition = composition,
               let settingsData = composition.value(forKey: "lutSettings") as? Data,
-              let settings = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(settingsData) as? [String: Any] else {
+              let settings = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSDictionary.self, from: settingsData) as? [String: Any] else {
             print("⚠️ LUTVideoCompositor: Could not load LUT settings from composition")
             return
         }
@@ -593,7 +593,7 @@ class LUTProcessor: ObservableObject {
                 // Try with extrapolation enabled
                 filter.setValue(true, forKey: "inputExtrapolate")
                 
-                guard let testOutputWithExtrapolate = filter.outputImage else {
+                guard let _ = filter.outputImage else {
                     print("   - ❌ Filter still has no output image")
                     print("🔧 Creating identity filter as fallback...")
                     return try createIdentityFilter()
@@ -1121,7 +1121,7 @@ class LUTProcessor: ObservableObject {
     }
     
     private func processVideoFrameByFrame(videoURL: URL, outputURL: URL, settings: LUTSettings) async throws {
-        let asset = AVAsset(url: videoURL)
+        let asset = AVURLAsset(url: videoURL)
         
         // Remove existing output file
         try? FileManager.default.removeItem(at: outputURL)
@@ -1377,12 +1377,11 @@ class LUTProcessor: ObservableObject {
             exportSession.metadataItemFilter = AVMetadataItemFilter.forSharing()
         }
         
-        await exportSession.export()
+        // Use modern async export API - it will throw errors automatically
+        try await exportSession.export(to: outputURL, as: .mp4)
         
-        guard exportSession.status == .completed else {
-            let error = exportSession.error?.localizedDescription ?? "Unknown error"
-            throw LUTProcessingError.exportFailed(error)
-        }
+        // Modern API handles completion and errors automatically
+        print("✅ Export completed successfully")
     }
     
     // MARK: - Preview Generation
@@ -1393,7 +1392,7 @@ class LUTProcessor: ObservableObject {
         try loadLUTFilters(settings: settings)
         print("✅ LUT filters loaded for preview generation")
         
-        let asset = AVAsset(url: videoURL)
+        let asset = AVURLAsset(url: videoURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         
@@ -1423,7 +1422,7 @@ class LUTProcessor: ObservableObject {
         try loadLUTFilters(settings: settings)
         print("✅ LUT filters loaded for preview generation at \(timeSeconds)s")
         
-        let asset = AVAsset(url: videoURL)
+        let asset = AVURLAsset(url: videoURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)

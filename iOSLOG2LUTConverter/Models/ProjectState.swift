@@ -297,15 +297,16 @@ class ProjectState: ObservableObject {
     }
     
     var estimatedExportTime: TimeInterval {
-        guard let firstVideo = videoURLs.first else { return 0.0 }
+        guard !videoURLs.isEmpty else { return 0.0 }
         
-        let asset = AVAsset(url: firstVideo)
-        let duration = asset.duration.seconds
+        // Use async duration loading, but for estimates we'll use a default
+        // This is just an estimate, so we can use a reasonable default
+        let estimatedDuration: Double = 30.0 // Default estimate
         
         // Estimate based on duration and device performance
         // iOS devices typically process 1 second of video in 0.5-2 seconds
         let processingMultiplier: Double = useGPU ? 0.5 : 1.5
-        return duration * processingMultiplier * Double(videoURLs.count)
+        return estimatedDuration * processingMultiplier * Double(videoURLs.count)
     }
     
     var estimatedFileSize: Int64 {
@@ -335,8 +336,8 @@ class ProjectState: ObservableObject {
         videoURLs.append(url)
         logVideoOperation("Added video: \(url.lastPathComponent)", level: .success)
         
-        // Log video details
-        let asset = AVAsset(url: url)
+        // Log video details using modern AVURLAsset
+        let asset = AVURLAsset(url: url)
         logVideoOperation("Analyzing video properties...", level: .info)
         
         // Get video duration and format info
@@ -380,7 +381,7 @@ class ProjectState: ObservableObject {
     // MARK: - Video Scrubbing Methods
     private func loadVideoDuration(from url: URL) async {
         do {
-            let asset = AVAsset(url: url)
+            let asset = AVURLAsset(url: url)
             let duration = try await asset.load(.duration)
             let durationSeconds = duration.seconds
             
@@ -481,7 +482,7 @@ class ProjectState: ObservableObject {
     }
     
     private func generateRawPreviewAtTime(videoURL: URL, timeSeconds: Double) async throws -> UIImage {
-        let asset = AVAsset(url: videoURL)
+        let asset = AVURLAsset(url: videoURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
@@ -639,7 +640,7 @@ class ProjectState: ObservableObject {
                 print("   - URL: \(videoURL.path)")
                 print("   - File exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
                 
-                let asset = AVAsset(url: videoURL)
+                let asset = AVURLAsset(url: videoURL)
                 
                 // Load asset properties for debugging
                 let duration = try await asset.load(.duration)
@@ -750,7 +751,7 @@ class ProjectState: ObservableObject {
     
     // MARK: - Raw Preview Generation
     private func generateRawPreview(videoURL: URL, duration: CMTime) async throws -> UIImage {
-        let asset = AVAsset(url: videoURL)
+        let asset = AVURLAsset(url: videoURL)
         
         // Create multiple generators with different configurations for maximum compatibility
         let generators = [
@@ -959,7 +960,7 @@ class ProjectState: ObservableObject {
                     print("   - Color Space: Display P3 (Wide Color)")
                     print("   - HDR Ready: ⚠️ Partial")
                 } else {
-                    print("   - Color Space: \(colorPrimaries ?? "Unknown")")
+                    print("   - Color Space: \(colorPrimaries)")
                 }
             } else {
                 print("   - Color Primaries: ❌ Not specified")
@@ -976,7 +977,7 @@ class ProjectState: ObservableObject {
                 } else if transferFunction == (kCVImageBufferTransferFunction_ITU_R_709_2 as String) {
                     print("   - HDR Type: ❌ Standard Gamma (SDR)")
                 } else {
-                    print("   - HDR Type: ⚠️ Unknown (\(transferFunction ?? "Unknown"))")
+                    print("   - HDR Type: ⚠️ Unknown (\(transferFunction))")
                 }
             } else {
                 print("   - Transfer Function: ❌ Not specified")
@@ -991,7 +992,7 @@ class ProjectState: ObservableObject {
                 } else if ycbcrMatrix == (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String) {
                     print("   - Matrix Type: Rec. 709")
                 } else {
-                    print("   - Matrix Type: \(ycbcrMatrix ?? "Unknown")")
+                    print("   - Matrix Type: \(ycbcrMatrix)")
                 }
             } else {
                 print("   - YCbCr Matrix: ❌ Not specified")
@@ -1300,21 +1301,39 @@ enum ValidationResult {
 
 // MARK: - Recent Projects (iOS Enhancement)
 struct RecentProject: Identifiable, Codable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let videoCount: Int
     let lutName: String
     let createdAt: Date
     let thumbnailData: Data?
+    
+    init(name: String, videoCount: Int, lutName: String, createdAt: Date, thumbnailData: Data? = nil) {
+        self.id = UUID()
+        self.name = name
+        self.videoCount = videoCount
+        self.lutName = lutName
+        self.createdAt = createdAt
+        self.thumbnailData = thumbnailData
+    }
 }
 
 struct FavoriteProject: Identifiable, Codable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let videoURLs: [URL]
     let primaryLUTURL: URL
     let secondaryLUTURL: URL?
     let settings: ProjectSettings
+    
+    init(name: String, videoURLs: [URL], primaryLUTURL: URL, secondaryLUTURL: URL? = nil, settings: ProjectSettings) {
+        self.id = UUID()
+        self.name = name
+        self.videoURLs = videoURLs
+        self.primaryLUTURL = primaryLUTURL
+        self.secondaryLUTURL = secondaryLUTURL
+        self.settings = settings
+    }
 }
 
 struct ProjectSettings: Codable {

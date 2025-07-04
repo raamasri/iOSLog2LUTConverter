@@ -1185,43 +1185,38 @@ struct ContentView: View {
         projectState.logGPUOperation("Using GPU acceleration for processing", level: .info)
         
         Task {
-            do {
-                projectState.logExportOperation("Initializing video processor...", level: .info)
+            projectState.logExportOperation("Initializing video processor...", level: .info)
+            
+            // Create output directory
+            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let outputDirectory = documentsPath.appendingPathComponent("LUTexport")
+            
+            let config = VideoProcessor.ProcessingConfig(
+                videoURLs: projectState.videoURLs,
+                primaryLUTURL: projectState.primaryLUTURL,
+                secondaryLUTURL: projectState.secondaryLUTURL,
+                primaryLUTOpacity: projectState.primaryLUTOpacity,
+                secondaryLUTOpacity: projectState.secondLUTOpacity,
+                whiteBalanceAdjustment: projectState.whiteBalanceValue,
+                useGPUProcessing: projectState.useGPU,
+                outputQuality: projectState.exportQuality.toLUTProcessorQuality(),
+                outputDirectory: outputDirectory
+            )
+            
+            projectState.logExportOperation("Configuration created successfully", level: .success)
+            
+            let processor = VideoProcessor()
+            await processor.processVideos(config: config)
+            
+            if let result = processor.exportedVideoURLs.first {
+                projectState.logExportOperation("Video export completed successfully", level: .success)
+                projectState.logExportOperation("Output file: \(result.lastPathComponent)", level: .success)
                 
-                // Create output directory
-                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let outputDirectory = documentsPath.appendingPathComponent("LUTexport")
-                
-                let config = VideoProcessor.ProcessingConfig(
-                    videoURLs: projectState.videoURLs,
-                    primaryLUTURL: projectState.primaryLUTURL,
-                    secondaryLUTURL: projectState.secondaryLUTURL,
-                    primaryLUTOpacity: projectState.primaryLUTOpacity,
-                    secondaryLUTOpacity: projectState.secondLUTOpacity,
-                    whiteBalanceAdjustment: projectState.whiteBalanceValue,
-                    useGPUProcessing: projectState.useGPU,
-                    outputQuality: projectState.exportQuality.toLUTProcessorQuality(),
-                    outputDirectory: outputDirectory
-                )
-                
-                projectState.logExportOperation("Configuration created successfully", level: .success)
-                
-                let processor = VideoProcessor()
-                await processor.processVideos(config: config)
-                
-                if let result = processor.exportedVideoURLs.first {
-                    projectState.logExportOperation("Video export completed successfully", level: .success)
-                    projectState.logExportOperation("Output file: \(result.lastPathComponent)", level: .success)
-                    
-                    // Store the result for sharing
-                    exportedVideoURL = result
-                    showingShareSheet = true
-                } else {
-                    projectState.logExportOperation("Export failed: No output file generated", level: .error)
-                }
-                
-            } catch {
-                projectState.logExportOperation("Export failed: \(error.localizedDescription)", level: .error)
+                // Store the result for sharing
+                exportedVideoURL = result
+                showingShareSheet = true
+            } else {
+                projectState.logExportOperation("Export failed: No output file generated", level: .error)
             }
         }
     }

@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Photos
 import CoreTransferable
 import Combine
 
@@ -69,11 +70,13 @@ struct ContentView: View {
             item.loadTransferable(type: Movie.self) { result in
                 DispatchQueue.main.async {
                     switch result {
-                                         case .success(let movie?):
-                         let url = movie.url
-                         self.videoURLs = [url]
-                         self.videoCount = 1
-                         print("✅ Video imported successfully: \(url.lastPathComponent)")
+                    case .success(let movie?):
+                        let url = movie.url
+                        self.videoURLs = [url]
+                        self.videoCount = 1
+                        // CRITICAL: Update ProjectState with the imported video
+                        self.projectState.addVideoURL(url)
+                        print("✅ Video imported successfully: \(url.lastPathComponent)")
                     case .failure(let error):
                         print("❌ Failed to import video: \(error)")
                     case .success(.none):
@@ -88,6 +91,15 @@ struct ContentView: View {
         }
         .onChange(of: lutManager.selectedSecondaryLUT) { _, newLUT in
             projectState.setSecondaryLUT(newLUT?.url)
+        }
+        // Update preview when opacity changes
+        .onChange(of: projectState.primaryLUTOpacity) { _, newOpacity in
+            print("🎨 Primary LUT opacity changed to \(Int(newOpacity * 100))% - Regenerating preview...")
+            projectState.generatePreview()
+        }
+        .onChange(of: projectState.secondLUTOpacity) { _, newOpacity in
+            print("🎭 Secondary LUT opacity changed to \(Int(newOpacity * 100))% - Regenerating preview...")
+            projectState.generatePreview()
         }
         // Update video URLs when test video is loaded
         .onChange(of: projectState.videoURLs) { _, newURLs in
@@ -512,13 +524,22 @@ struct ContentView: View {
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
             
-            // Export Button
+            // Convert Video Button
             Button(action: exportVideo) {
                 HStack {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.title3)
+                    if isExporting {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(0.8)
+                    } else if isConversionComplete {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                    } else {
+                        Image(systemName: "wand.and.rays")
+                            .font(.title3)
+                    }
                     
-                    Text("Export Video")
+                    Text(isExporting ? "Converting..." : (isConversionComplete ? "Converted!" : "Convert Video"))
                         .font(.headline)
                         .fontWeight(.semibold)
                 }
@@ -526,12 +547,59 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 .padding(16)
                 .background(
-                    videoCount > 0 ? Color.blue.gradient : Color.gray.gradient,
+                    isConversionComplete ? Color.green.gradient : 
+                    (videoCount > 0 && !isExporting) ? Color.blue.gradient : Color.gray.gradient,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
             }
             .buttonStyle(.plain)
-            .disabled(videoCount == 0)
+            .disabled(videoCount == 0 || isExporting)
+            
+            // Save to Photos Button (shown after export)
+            if showingSaveToPhotos {
+                Button(action: saveToPhotos) {
+                    HStack {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title3)
+                        
+                        Text("Save to Photos")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(16)
+                    .background(
+                        Color.green.gradient,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+            
+            // Reset Button (shown after conversion)
+            if isConversionComplete {
+                Button(action: resetConversion) {
+                    HStack {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.title3)
+                        
+                        Text("Start New Conversion")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(16)
+                    .background(
+                        Color.orange.gradient,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
         }
     }
     
@@ -543,23 +611,46 @@ struct ContentView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            HStack {
-                // Status indicator icon - Fixed to use proper enum cases
-                Image(systemName: getStatusIcon())
-                    .font(.caption)
-                    .foregroundStyle(getStatusColor())
-                
-                Text(fileImportManager.lastImportStatus.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Spacer()
+            // Export Progress Bar (shown during export)
+            if isExporting {
+                VStack(spacing: 8) {
+                    ProgressView(value: exportProgress)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .scaleEffect(y: 2.0)
+                        .animation(.easeInOut(duration: 0.3), value: exportProgress)
+                    
+                    Text(exportStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .animation(.easeInOut(duration: 0.3), value: exportStatusMessage)
+                }
+                .padding(12)
+                .background(
+                    .thinMaterial,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .transition(.opacity.combined(with: .scale))
+            } else {
+                // Regular Status Display
+                HStack {
+                    // Status indicator icon - Fixed to use proper enum cases
+                    Image(systemName: getStatusIcon())
+                        .font(.caption)
+                        .foregroundStyle(getStatusColor())
+                    
+                    Text(fileImportManager.lastImportStatus.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Spacer()
+                }
+                .padding(12)
+                .background(
+                    .thinMaterial,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
             }
-            .padding(12)
-            .background(
-                .thinMaterial,
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
         }
     }
     
@@ -594,18 +685,6 @@ struct ContentView: View {
     private var prominentVideoPreview: some View {
         VideoPreviewView(projectState: projectState)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear {
-                // Initialize debug mode if enabled
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    print("🧪 ContentView: Auto-enabling debug mode...")
-                    projectState.enableDebugMode()
-                    
-                    // Auto-select LUTs after they're loaded
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        autoSelectDebugLUTs()
-                    }
-                }
-            }
     }
     
     // MARK: - Helper Methods
@@ -635,6 +714,13 @@ struct ContentView: View {
     }
     
     // MARK: - Export Functionality
+    @State private var exportedVideoURL: URL?
+    @State private var showingSaveToPhotos = false
+    @State private var isExporting = false
+    @State private var exportProgress: Double = 0.0
+    @State private var exportStatusMessage = ""
+    @State private var isConversionComplete = false
+    
     private func exportVideo() {
         guard videoCount > 0, let videoURL = videoURLs.first else {
             print("❌ Export: No video selected")
@@ -655,29 +741,208 @@ struct ContentView: View {
             print("📱 Exporting without LUT (original video)")
         }
         
+        // Start export UI state
+        isExporting = true
+        exportProgress = 0.0
+        exportStatusMessage = "Initializing conversion..."
+        
         Task {
             do {
-                // Create export folder in Documents
+                // Create temporary export folder
                 let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let exportFolder = documentsPath.appendingPathComponent("LUTexport")
+                
+                await MainActor.run {
+                    exportStatusMessage = "Creating export directory..."
+                    exportProgress = 0.1
+                }
                 
                 try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
                 print("📁 Export folder created: \(exportFolder.path)")
                 
-                // For now, create a simple copy to test export functionality
-                let outputURL = exportFolder.appendingPathComponent("test_export_\(Date().timeIntervalSince1970).mp4")
+                let outputFilename = projectState.generateOutputFileName(for: videoURL)
+                let outputURL = exportFolder.appendingPathComponent(outputFilename)
                 
-                // Simple file copy for debugging
-                try FileManager.default.copyItem(at: videoURL, to: outputURL)
-                print("📁 Debug: Simple file copy completed to \(outputURL.lastPathComponent)")
+                // Remove existing file if it exists
+                if FileManager.default.fileExists(atPath: outputURL.path) {
+                    try FileManager.default.removeItem(at: outputURL)
+                    print("🗑️ Removed existing file: \(outputURL.lastPathComponent)")
+                }
+                
+                // Use VideoProcessor for actual LUT processing if LUTs are selected
+                if lutManager.selectedPrimaryLUT != nil || lutManager.selectedSecondaryLUT != nil {
+                    await MainActor.run {
+                        exportStatusMessage = "Processing video with LUTs..."
+                        exportProgress = 0.2
+                    }
+                    
+                    print("🎨 Processing video with LUTs...")
+                    let videoProcessor = VideoProcessor()
+                    
+                    // Convert ExportQuality to LUTProcessor.OutputQuality
+                    let lutOutputQuality = convertToLUTProcessorQuality(projectState.exportQuality)
+                    
+                    let settings = VideoProcessor.ProcessingConfig(
+                        videoURLs: [videoURL],
+                        primaryLUTURL: lutManager.selectedPrimaryLUT?.url,
+                        secondaryLUTURL: lutManager.selectedSecondaryLUT?.url,
+                        primaryLUTOpacity: Float(projectState.primaryLUTOpacity),
+                        secondaryLUTOpacity: Float(projectState.secondLUTOpacity),
+                        whiteBalanceAdjustment: Float(projectState.whiteBalanceValue),
+                        useGPUProcessing: projectState.useGPU,
+                        outputQuality: lutOutputQuality,
+                        outputDirectory: exportFolder
+                    )
+                    
+                    // Subscribe to progress updates
+                    let progressCancellable = videoProcessor.$exportProgress
+                        .receive(on: DispatchQueue.main)
+                        .sink { progress in
+                            self.exportProgress = 0.2 + (progress * 0.7) // Map to 20%-90%
+                        }
+                    
+                    let statusCancellable = videoProcessor.$statusMessage
+                        .receive(on: DispatchQueue.main)
+                        .sink { status in
+                            self.exportStatusMessage = status
+                        }
+                    
+                    await videoProcessor.processVideos(config: settings)
+                    
+                    progressCancellable.cancel()
+                    statusCancellable.cancel()
+                    
+                    // Find the actual output file (VideoProcessor may change the name)
+                    let exportedFiles = try FileManager.default.contentsOfDirectory(at: exportFolder, includingPropertiesForKeys: nil)
+                    if let actualOutputURL = exportedFiles.first(where: { $0.pathExtension == "mp4" }) {
+                        print("✅ Found exported file: \(actualOutputURL.path)")
+                        await MainActor.run {
+                            self.exportedVideoURL = actualOutputURL
+                            self.exportStatusMessage = "LUT processing completed!"
+                            self.exportProgress = 0.95
+                        }
+                    } else {
+                        throw NSError(domain: "ExportError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Exported file not found"])
+                    }
+                    
+                    print("✅ LUT processing completed!")
+                } else {
+                    await MainActor.run {
+                        exportStatusMessage = "Copying original video..."
+                        exportProgress = 0.5
+                    }
+                    
+                    // Simple copy if no LUTs selected
+                    try FileManager.default.copyItem(at: videoURL, to: outputURL)
+                    print("📁 No LUTs selected - copied original video")
+                    
+                    await MainActor.run {
+                        self.exportedVideoURL = outputURL
+                        self.exportStatusMessage = "Video copied successfully!"
+                        self.exportProgress = 0.95
+                    }
+                }
+                
+                await MainActor.run {
+                    self.exportStatusMessage = "Conversion completed!"
+                    self.exportProgress = 1.0
+                    self.isExporting = false
+                    self.isConversionComplete = true
+                    self.showingSaveToPhotos = true
+                }
                 
                 print("✅ Export completed successfully!")
-                print("📁 Exported to: \(exportFolder.path)")
+                print("📁 Exported to: \(self.exportedVideoURL?.path ?? "Unknown")")
                 
             } catch {
                 print("❌ Export failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.isExporting = false
+                    self.exportProgress = 0.0
+                    self.exportStatusMessage = "Export failed: \(error.localizedDescription)"
+                    self.isConversionComplete = false
+                    projectState.updateStatus("Export failed: \(error.localizedDescription)")
+                }
             }
         }
+    }
+    
+    private func saveToPhotos() {
+        guard let videoURL = exportedVideoURL else { return }
+        
+        print("📱 Saving video to Photos...")
+        print("📁 Video URL: \(videoURL.path)")
+        print("📁 File exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
+        
+        // Check if file exists and is readable
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+            print("❌ Video file does not exist at path: \(videoURL.path)")
+            projectState.updateStatus("Video file not found")
+            return
+        }
+        
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            DispatchQueue.main.async {
+                switch status {
+                case .authorized, .limited:
+                    print("✅ Photos access authorized, attempting to save...")
+                    PHPhotoLibrary.shared().performChanges({
+                        PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
+                    }) { success, error in
+                        DispatchQueue.main.async {
+                            if success {
+                                print("✅ Video saved to Photos successfully!")
+                                projectState.updateStatus("Video saved to Photos")
+                                // Keep the save button visible - don't hide it
+                            } else {
+                                print("❌ Failed to save video to Photos: \(error?.localizedDescription ?? "Unknown error")")
+                                if let error = error {
+                                    print("❌ Error details: \(error)")
+                                }
+                                projectState.updateStatus("Failed to save to Photos")
+                            }
+                        }
+                    }
+                case .denied, .restricted:
+                    print("❌ Photos access denied")
+                    projectState.updateStatus("Photos access denied")
+                case .notDetermined:
+                    print("❌ Photos access not determined")
+                    projectState.updateStatus("Photos access required")
+                @unknown default:
+                    print("❌ Unknown Photos authorization status")
+                    projectState.updateStatus("Photos access error")
+                }
+            }
+        }
+    }
+    
+    private func resetConversion() {
+        // Reset all conversion states
+        isExporting = false
+        exportProgress = 0.0
+        exportStatusMessage = ""
+        isConversionComplete = false
+        showingSaveToPhotos = false
+        exportedVideoURL = nil
+        
+        // Clear video and LUT selections
+        videoURLs = []
+        videoCount = 0
+        selectedVideoItems = []
+        lutManager.selectedPrimaryLUT = nil
+        lutManager.selectedSecondaryLUT = nil
+        projectState.clearVideoURLs()
+        projectState.setPrimaryLUT(nil)
+        projectState.setSecondaryLUT(nil)
+        projectState.previewImage = nil
+        
+        // Reset opacity sliders
+        projectState.primaryLUTOpacity = 1.0
+        projectState.secondLUTOpacity = 1.0
+        
+        print("🔄 Conversion reset - ready for new conversion")
+        projectState.updateStatus("Ready for new conversion")
     }
     
     // MARK: - Helper Methods

@@ -74,8 +74,7 @@ Dependencies/
 #
 # It is recommended to not store the screenshots in the git repo.
 # Instead, use fastlane to re-generate the screenshots whenever they are needed.
-# For more information about the recommended setup visit:
-# https://docs.fastlane.tools/best-practices/source-control/
+# For more information about the screenshot feature, see https://docs.fastlane.tools/actions/screenshot/
 
 fastlane/report.xml
 fastlane/Preview.html
@@ -88,6 +87,20 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
+
+# Large video files (exceed GitHub 100MB limit)
+*.MP4
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+
+# Test footage directory
+iOSLOG2LUTConverter/Resources/testfootage/
 
 # macOS
 .DS_Store

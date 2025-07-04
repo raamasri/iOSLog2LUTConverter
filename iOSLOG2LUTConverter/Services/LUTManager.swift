@@ -91,7 +91,7 @@ class LUTManager: ObservableObject {
     }
     
     // MARK: - LUT Loading
-    private func loadBuiltInLUTs() {
+    func loadBuiltInLUTs() {
         print("🔄 Starting to load built-in LUTs...")
         isLoading = true
         

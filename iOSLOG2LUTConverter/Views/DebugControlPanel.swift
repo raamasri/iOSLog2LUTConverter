@@ -149,6 +149,20 @@ struct DebugControlPanel: View {
                     .background(.green.gradient, in: RoundedRectangle(cornerRadius: 12))
                     .foregroundStyle(.white)
                 }
+                
+                // Force Preview Generation
+                Button {
+                    forcePreviewGeneration()
+                } label: {
+                    HStack {
+                        Image(systemName: "photo.fill")
+                        Text("Force Preview")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(.orange.gradient, in: RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+                }
             }
         }
         .padding()
@@ -480,6 +494,17 @@ struct DebugControlPanel: View {
         
         // The actual export is handled by ContentView's exportVideo method
         NotificationCenter.default.post(name: Notification.Name("DebugTestExport"), object: nil)
+    }
+    
+    private func forcePreviewGeneration() {
+        addLog("🖼️ Force preview generation requested")
+        addLog("📊 Current state:")
+        addLog("   - Videos: \(projectState.videoURLs.count)")
+        addLog("   - Primary LUT: \(lutManager.selectedPrimaryLUT?.displayName ?? "None")")
+        addLog("   - Secondary LUT: \(lutManager.selectedSecondaryLUT?.displayName ?? "None")")
+        addLog("   - isReadyForPreview: \(projectState.isReadyForPreview)")
+        
+        projectState.forcePreviewGeneration()
     }
     
     private func updateTestProgress(_ progress: Double, _ step: String) {

@@ -27,6 +27,7 @@ class VideoProcessor: ObservableObject {
         let videoURLs: [URL]
         let primaryLUTURL: URL?
         let secondaryLUTURL: URL?
+        let primaryLUTOpacity: Float
         let secondaryLUTOpacity: Float
         let whiteBalanceAdjustment: Float
         let useGPUProcessing: Bool
@@ -110,6 +111,7 @@ class VideoProcessor: ObservableObject {
         let lutSettings = LUTProcessor.LUTSettings(
             primaryLUTURL: config.primaryLUTURL,
             secondaryLUTURL: config.secondaryLUTURL,
+            primaryLUTOpacity: config.primaryLUTOpacity,
             secondaryLUTOpacity: config.secondaryLUTOpacity,
             whiteBalanceAdjustment: config.whiteBalanceAdjustment,
             useGPUProcessing: config.useGPUProcessing,
@@ -180,14 +182,26 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - Preview Generation
     func generatePreview(videoURL: URL, settings: ProcessingConfig) async throws -> UIImage {
+        print("🎬 VideoProcessor: Generating preview with enhanced analysis...")
+        
+        // Analyze video characteristics before processing
+        await analyzeVideoForProcessing(videoURL)
+        
         let lutSettings = LUTProcessor.LUTSettings(
             primaryLUTURL: settings.primaryLUTURL,
             secondaryLUTURL: settings.secondaryLUTURL,
+            primaryLUTOpacity: settings.primaryLUTOpacity,
             secondaryLUTOpacity: settings.secondaryLUTOpacity,
             whiteBalanceAdjustment: settings.whiteBalanceAdjustment,
             useGPUProcessing: settings.useGPUProcessing,
             outputQuality: settings.outputQuality
         )
+        
+        print("⚙️ Processing Configuration:")
+        print("   - GPU Processing: \(settings.useGPUProcessing ? "✅ Enabled" : "❌ Disabled")")
+        print("   - Primary LUT: \(settings.primaryLUTURL?.lastPathComponent ?? "None")")
+        print("   - Secondary LUT: \(settings.secondaryLUTURL?.lastPathComponent ?? "None")")
+        print("   - Secondary Opacity: \(Int(settings.secondaryLUTOpacity * 100))%")
         
         let ciImage = try await lutProcessor.generatePreview(from: videoURL, settings: lutSettings)
         
@@ -197,6 +211,7 @@ class VideoProcessor: ObservableObject {
             throw ProcessingError.processingFailed("Could not generate preview image")
         }
         
+        print("✅ VideoProcessor: Preview generated successfully")
         return UIImage(cgImage: cgImage)
     }
     
@@ -217,7 +232,7 @@ class VideoProcessor: ObservableObject {
     private func handleError(_ error: ProcessingError) async {
         lastError = error
         isExporting = false
-        updateStatus(error.localizedDescription ?? "Unknown error")
+        updateStatus(error.localizedDescription)
         
         // Reset progress
         exportProgress = 0.0
@@ -282,6 +297,153 @@ class VideoProcessor: ObservableObject {
             return "\(statusMessage) (\(progressPercent)% - \(timeRemaining) remaining)"
         } else {
             return "\(statusMessage) (\(progressPercent)%)"
+        }
+    }
+    
+    // MARK: - Video Analysis for Processing
+    private func analyzeVideoForProcessing(_ videoURL: URL) async {
+        print("🔍 VideoProcessor: Analyzing video for optimal processing...")
+        
+        do {
+            let asset = AVURLAsset(url: videoURL)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            
+            guard let videoTrack = tracks.first else {
+                print("❌ No video track found")
+                return
+            }
+            
+            // Load track properties
+            let naturalSize = try await videoTrack.load(.naturalSize)
+            let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
+            let formatDescriptions = try await videoTrack.load(.formatDescriptions)
+            
+            print("📊 Video Processing Analysis:")
+            print("   - Resolution: \(Int(naturalSize.width))x\(Int(naturalSize.height))")
+            print("   - Frame Rate: \(nominalFrameRate) fps")
+            
+            // Analyze format for processing optimization
+            if let formatDesc = formatDescriptions.first {
+                let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDesc)
+                let fourCC = String(format: "%c%c%c%c", 
+                                  (mediaSubType >> 24) & 0xFF,
+                                  (mediaSubType >> 16) & 0xFF, 
+                                  (mediaSubType >> 8) & 0xFF,
+                                  mediaSubType & 0xFF)
+                print("   - Codec: \(fourCC)")
+                
+                // Check processing requirements
+                analyzeProcessingRequirements(formatDesc, resolution: naturalSize)
+                
+                // Recommend processing settings
+                recommendProcessingSettings(formatDesc, frameRate: nominalFrameRate)
+            }
+            
+        } catch {
+            print("❌ VideoProcessor: Analysis failed - \(error.localizedDescription)")
+        }
+    }
+    
+    private func analyzeProcessingRequirements(_ formatDesc: CMFormatDescription, resolution: CGSize) {
+        print("⚙️ Processing Requirements Analysis:")
+        
+        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
+        
+        // Check for 10-bit processing requirements
+        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+                     pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
+                     pixelFormat == kCVPixelFormatType_422YpCbCr10 ||
+                     pixelFormat == kCVPixelFormatType_444YpCbCr10
+        
+        if is10Bit {
+            print("   - 10-bit Processing: ✅ Required")
+            print("   - Memory Usage: ⚠️ High (10-bit pipeline)")
+            print("   - GPU Acceleration: ✅ Highly recommended")
+        } else {
+            print("   - 10-bit Processing: ❌ Not required (8-bit)")
+            print("   - Memory Usage: ✅ Standard")
+            print("   - GPU Acceleration: ⚠️ Optional")
+        }
+        
+        // Check resolution impact
+        let pixelCount = resolution.width * resolution.height
+        if pixelCount >= 3840 * 2160 { // 4K
+            print("   - Resolution Impact: ⚠️ 4K - High processing load")
+            print("   - Recommended: GPU processing + high memory")
+        } else if pixelCount >= 1920 * 1080 { // 1080p
+            print("   - Resolution Impact: ⚠️ 1080p - Moderate processing load")
+        } else {
+            print("   - Resolution Impact: ✅ Lower resolution - Light processing load")
+        }
+        
+        // Check for HDR processing requirements
+        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
+            let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
+            let transferFunction = extensions[kCVImageBufferTransferFunctionKey as String] as? String
+            
+            let isHDR = transferFunction == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) ||
+                       transferFunction == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+            
+            let isWideGamut = colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) ||
+                             colorPrimaries == (kCVImageBufferColorPrimaries_P3_D65 as String)
+            
+            if isHDR {
+                print("   - HDR Processing: ✅ Required")
+                print("   - Color Management: ✅ Critical")
+            }
+            
+            if isWideGamut {
+                print("   - Wide Gamut: ✅ Detected")
+                print("   - Color Accuracy: ✅ High precision required")
+            }
+        }
+    }
+    
+    private func recommendProcessingSettings(_ formatDesc: CMFormatDescription, frameRate: Float) {
+        print("💡 Processing Recommendations:")
+        
+        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
+        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+                     pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
+                     pixelFormat == kCVPixelFormatType_422YpCbCr10 ||
+                     pixelFormat == kCVPixelFormatType_444YpCbCr10
+        
+        // GPU vs CPU recommendation
+        if is10Bit {
+            print("   - Processing Mode: ✅ GPU (Essential for 10-bit)")
+        } else {
+            print("   - Processing Mode: ⚠️ GPU recommended, CPU acceptable")
+        }
+        
+        // Quality settings recommendation
+        if is10Bit {
+            print("   - Export Quality: ✅ High or Maximum (preserve 10-bit)")
+        } else {
+            print("   - Export Quality: ⚠️ Medium or High")
+        }
+        
+        // Frame rate considerations
+        if frameRate >= 60 {
+            print("   - Frame Rate: ⚠️ High (\(frameRate) fps) - Extended processing time")
+        } else if frameRate >= 30 {
+            print("   - Frame Rate: ✅ Standard (\(frameRate) fps)")
+        } else {
+            print("   - Frame Rate: ✅ Cinema (\(frameRate) fps)")
+        }
+        
+        // Memory recommendations
+        if is10Bit {
+            print("   - Memory: ⚠️ Ensure sufficient RAM for 10-bit pipeline")
+        }
+        
+        // Check for Apple Log specific recommendations
+        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
+            let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
+            
+            if is10Bit && colorPrimaries != nil {
+                print("   - Apple Log: ✅ Use AppleLogToRec709 LUT for best results")
+                print("   - Color Grading: ✅ Apply secondary LUTs after log conversion")
+            }
         }
     }
 } 

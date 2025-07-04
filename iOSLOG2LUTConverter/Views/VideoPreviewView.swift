@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 // MARK: - Prominent Video Preview Component with Apple Design
 struct VideoPreviewView: View {
@@ -10,6 +11,15 @@ struct VideoPreviewView: View {
     // Debug mode gesture
     @State private var tapCount = 0
     
+    // Computed property for current preview image based on toggle
+    private var currentPreviewImage: UIImage? {
+        if projectState.showBeforeAfter {
+            return projectState.rawPreviewImage
+        } else {
+            return projectState.previewImage
+        }
+    }
+    
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -19,8 +29,8 @@ struct VideoPreviewView: View {
                 
                 // Preview content or placeholder
                 Group {
-                    if let previewImage = projectState.previewImage {
-                        // Actual video preview with LUT applied
+                    if let previewImage = currentPreviewImage {
+                        // Actual video preview (raw or processed based on toggle)
                         Image(uiImage: previewImage)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
@@ -45,6 +55,14 @@ struct VideoPreviewView: View {
                 lutIndicator
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(16)
+                
+                // Before/After toggle button (top right, below LUT indicator)
+                if projectState.rawPreviewImage != nil && projectState.previewImage != nil {
+                    beforeAfterToggle
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.top, 60) // Position below LUT indicator
+                        .padding(.trailing, 16)
+                }
                 
                 // Debug mode indicator (top left)
                 if projectState.isDebugMode {
@@ -211,6 +229,33 @@ struct VideoPreviewView: View {
             .ultraThinMaterial.opacity(0.7),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
+    }
+    
+    // MARK: - Before/After Toggle Button
+    private var beforeAfterToggle: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                projectState.showBeforeAfter.toggle()
+            }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: projectState.showBeforeAfter ? "eye.slash" : "eye")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                
+                Text(projectState.showBeforeAfter ? "Before" : "After")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                projectState.showBeforeAfter ? .red.opacity(0.8) : .blue.opacity(0.8),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Simulation Methods (for demonstration)

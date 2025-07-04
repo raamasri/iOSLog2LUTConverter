@@ -357,7 +357,7 @@ class LUTProcessor: ObservableObject {
             switch self {
             case .low, .medium: return .h264
             case .high: return .h264
-            case .maximum: return .h264 // Use H.264 with highest quality settings instead of HEVC
+            case .maximum: return .hevc // Use HEVC for maximum quality to support wide color
             }
         }
         
@@ -377,7 +377,7 @@ class LUTProcessor: ObservableObject {
             case .low: return AVVideoProfileLevelH264BaselineAutoLevel
             case .medium: return AVVideoProfileLevelH264MainAutoLevel
             case .high: return AVVideoProfileLevelH264HighAutoLevel
-            case .maximum: return AVVideoProfileLevelH264HighAutoLevel // Use highest H.264 profile
+            case .maximum: return "HEVC_Main_AutoLevel" // Use exact string from iOS error message
             }
         }
         
@@ -1154,18 +1154,20 @@ class LUTProcessor: ObservableObject {
         // Create base compression properties
         var compressionProperties: [String: Any] = [
             AVVideoAverageBitRateKey: settings.outputQuality.bitRate,
-            AVVideoProfileLevelKey: settings.outputQuality.profileLevel,
-            AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
             AVVideoExpectedSourceFrameRateKey: 30,
             AVVideoMaxKeyFrameIntervalKey: settings.outputQuality.keyFrameInterval,
             AVVideoQualityKey: settings.outputQuality.compressionQuality
         ]
         
-        // Add wide color properties only for maximum quality to avoid codec compatibility issues
-        if settings.outputQuality == .maximum {
-            compressionProperties[AVVideoAllowWideColorKey] = true
-            compressionProperties[AVVideoColorPrimariesKey] = AVVideoColorPrimaries_ITU_R_2020
+        // Add codec-specific properties
+        if settings.outputQuality.codec == .h264 {
+            // H.264 specific properties
+            compressionProperties[AVVideoProfileLevelKey] = settings.outputQuality.profileLevel
+            compressionProperties[AVVideoH264EntropyModeKey] = AVVideoH264EntropyModeCABAC
         }
+        // HEVC doesn't need profile level or entropy mode properties
+        
+        // Note: HEVC profile level and wide color properties removed due to compatibility issues across iOS versions/simulators
         
         let writerInputSettings: [String: Any] = [
             AVVideoCodecKey: settings.outputQuality.codec,

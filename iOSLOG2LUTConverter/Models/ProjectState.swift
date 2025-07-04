@@ -776,10 +776,10 @@ enum ExportQuality: String, CaseIterable, Codable {
     
     var description: String {
         switch self {
-        case .low: return "Low (Fast, smaller file)"
-        case .medium: return "Medium (Balanced)"
-        case .high: return "High (Recommended)"
-        case .maximum: return "Maximum (Slow, largest file)"
+        case .low: return "Low (Fast, 720p max, smaller files)"
+        case .medium: return "Medium (Balanced, 1080p max)"
+        case .high: return "High (Original resolution, recommended)"
+        case .maximum: return "Max (Original data preserved, largest files)"
         }
     }
 }

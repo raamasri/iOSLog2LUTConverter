@@ -328,8 +328,105 @@ class LUTProcessor: ObservableObject {
             case .low: return 2_000_000    // 2 Mbps
             case .medium: return 5_000_000 // 5 Mbps
             case .high: return 10_000_000  // 10 Mbps
-            case .maximum: return 20_000_000 // 20 Mbps
+            case .maximum: return 50_000_000 // 50 Mbps - Very high for maximum quality
             }
+        }
+        
+        /// Resolution scaling factor - 1.0 means original resolution
+        var resolutionScale: CGFloat {
+            switch self {
+            case .low: return 0.5      // Scale to 50% (e.g., 4K -> 1080p, 1080p -> 540p)
+            case .medium: return 0.75  // Scale to 75% 
+            case .high: return 1.0     // Original resolution
+            case .maximum: return 1.0  // Original resolution - preserve everything
+            }
+        }
+        
+        /// Maximum resolution limit - nil means no limit
+        var maxResolution: CGSize? {
+            switch self {
+            case .low: return CGSize(width: 1280, height: 720)    // 720p max
+            case .medium: return CGSize(width: 1920, height: 1080) // 1080p max
+            case .high: return nil     // No limit
+            case .maximum: return nil  // No limit - preserve original
+            }
+        }
+        
+        /// Video codec to use
+        var codec: AVVideoCodecType {
+            switch self {
+            case .low, .medium: return .h264
+            case .high: return .h264
+            case .maximum: return .h264 // Use H.264 with highest quality settings instead of HEVC
+            }
+        }
+        
+        /// Export preset for AVAssetExportSession
+        var exportPreset: String {
+            switch self {
+            case .low: return AVAssetExportPresetMediumQuality
+            case .medium: return AVAssetExportPreset1920x1080
+            case .high: return AVAssetExportPresetHighestQuality
+            case .maximum: return AVAssetExportPresetPassthrough // Preserve original data
+            }
+        }
+        
+        /// H.264/HEVC profile level
+        var profileLevel: String {
+            switch self {
+            case .low: return AVVideoProfileLevelH264BaselineAutoLevel
+            case .medium: return AVVideoProfileLevelH264MainAutoLevel
+            case .high: return AVVideoProfileLevelH264HighAutoLevel
+            case .maximum: return AVVideoProfileLevelH264HighAutoLevel // Use highest H.264 profile
+            }
+        }
+        
+        /// Key frame interval
+        var keyFrameInterval: Int {
+            switch self {
+            case .low: return 60       // Less frequent keyframes for smaller files
+            case .medium: return 30
+            case .high: return 30
+            case .maximum: return 15   // More frequent keyframes for maximum quality
+            }
+        }
+        
+        /// Quality description for UI
+        var description: String {
+            switch self {
+            case .low: return "Low (Fast, 720p max, smaller files)"
+            case .medium: return "Medium (Balanced, 1080p max)"
+            case .high: return "High (Original resolution, recommended)"
+            case .maximum: return "Max (Original data preserved, largest files)"
+            }
+        }
+        
+        /// Calculate output size based on input size
+        func outputSize(from inputSize: CGSize) -> CGSize {
+            var outputSize = CGSize(
+                width: inputSize.width * resolutionScale,
+                height: inputSize.height * resolutionScale
+            )
+            
+            // Apply maximum resolution limit if set
+            if let maxRes = maxResolution {
+                if outputSize.width > maxRes.width || outputSize.height > maxRes.height {
+                    let scaleX = maxRes.width / outputSize.width
+                    let scaleY = maxRes.height / outputSize.height
+                    let scale = min(scaleX, scaleY)
+                    
+                    outputSize = CGSize(
+                        width: outputSize.width * scale,
+                        height: outputSize.height * scale
+                    )
+                }
+            }
+            
+            // Ensure even dimensions for video encoding
+            outputSize.width = floor(outputSize.width / 2) * 2
+            outputSize.height = floor(outputSize.height / 2) * 2
+            
+            return outputSize
         }
     }
     
@@ -1036,9 +1133,13 @@ class LUTProcessor: ObservableObject {
         }
         
         let naturalSize = try await videoTrack.load(.naturalSize)
-        print("🎬 Processing video: \(Int(naturalSize.width))x\(Int(naturalSize.height))")
+        let outputSize = settings.outputQuality.outputSize(from: naturalSize)
         
-        // Use better pixel format for 4K video processing
+        print("🎬 Processing video: \(Int(naturalSize.width))x\(Int(naturalSize.height)) → \(Int(outputSize.width))x\(Int(outputSize.height))")
+        print("📊 Quality: \(settings.outputQuality)")
+        print("📊 Codec: \(settings.outputQuality.codec.rawValue)")
+        print("📊 Bitrate: \(settings.outputQuality.bitRate / 1_000_000)Mbps")
+        
         let readerOutputSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true
@@ -1047,31 +1148,34 @@ class LUTProcessor: ObservableObject {
         let assetReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         assetReader.add(assetReaderOutput)
         
-        // Set up asset writer with improved settings for 4K
+        // Set up asset writer with enhanced quality settings
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         
-        // Improved writer settings for better compatibility
         let writerInputSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: naturalSize.width,
-            AVVideoHeightKey: naturalSize.height,
+            AVVideoCodecKey: settings.outputQuality.codec,
+            AVVideoWidthKey: outputSize.width,
+            AVVideoHeightKey: outputSize.height,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: settings.outputQuality.bitRate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoProfileLevelKey: settings.outputQuality.profileLevel,
                 AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
                 AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoMaxKeyFrameIntervalKey: 30
+                AVVideoMaxKeyFrameIntervalKey: settings.outputQuality.keyFrameInterval,
+                AVVideoQualityKey: settings.outputQuality.compressionQuality,
+                // Enhanced settings for maximum quality
+                AVVideoAllowWideColorKey: settings.outputQuality == .maximum ? true : false,
+                AVVideoColorPrimariesKey: settings.outputQuality == .maximum ? AVVideoColorPrimaries_ITU_R_2020 : AVVideoColorPrimaries_ITU_R_709_2
             ]
         ]
         
         let assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerInputSettings)
         assetWriterInput.expectsMediaDataInRealTime = false
         
-        // Improved pixel buffer attributes for better memory management
+        // Enhanced pixel buffer attributes
         let pixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: Int(naturalSize.width),
-            kCVPixelBufferHeightKey as String: Int(naturalSize.height),
+            kCVPixelBufferWidthKey as String: Int(outputSize.width),
+            kCVPixelBufferHeightKey as String: Int(outputSize.height),
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
@@ -1114,6 +1218,16 @@ class LUTProcessor: ObservableObject {
                         let inputImage = CIImage(cvPixelBuffer: pixelBuffer)
                         let processedImage = processImage(inputImage, settings: settings) ?? inputImage
                         
+                        // Scale image to output size if needed
+                        let finalImage: CIImage
+                        if outputSize != naturalSize {
+                            let scaleX = outputSize.width / naturalSize.width
+                            let scaleY = outputSize.height / naturalSize.height
+                            finalImage = processedImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+                        } else {
+                            finalImage = processedImage
+                        }
+                        
                         // Create output pixel buffer with better error handling
                         var outputPixelBuffer: CVPixelBuffer?
                         let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferAdaptor.pixelBufferPool!, &outputPixelBuffer)
@@ -1129,7 +1243,7 @@ class LUTProcessor: ObservableObject {
                         }
                         
                         // Render processed image to output buffer
-                        context.render(processedImage, to: finalPixelBuffer)
+                        context.render(finalImage, to: finalPixelBuffer)
                         
                         // Get presentation time
                         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -1241,14 +1355,19 @@ class LUTProcessor: ObservableObject {
         // Remove existing file if it exists
         try? FileManager.default.removeItem(at: outputURL)
         
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: settings.outputQuality.exportPreset) else {
             throw LUTProcessingError.exportFailed("Could not create export session")
         }
         
         exportSession.videoComposition = composition
         exportSession.outputURL = outputURL
         exportSession.outputFileType = .mp4
-        exportSession.shouldOptimizeForNetworkUse = true
+        exportSession.shouldOptimizeForNetworkUse = settings.outputQuality != .maximum // Only optimize for non-maximum quality
+        
+        // For maximum quality, preserve metadata
+        if settings.outputQuality == .maximum {
+            exportSession.metadataItemFilter = AVMetadataItemFilter.forSharing()
+        }
         
         await exportSession.export()
         

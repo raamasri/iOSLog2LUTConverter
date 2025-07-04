@@ -362,29 +362,6 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 4)
                 
-                // Export Quality Selector
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Export Quality")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    Picker("Export Quality", selection: $projectState.exportQuality) {
-                        ForEach(ExportQuality.allCases, id: \.self) { quality in
-                            Text(quality.description)
-                                .tag(quality)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .accentColor(.purple)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(.systemGray6))
-                    )
-                }
-                .padding(.horizontal, 4)
-                
                 // Secondary LUT Selection - Now Optional
                 VStack(spacing: 8) {
                     Button {
@@ -561,6 +538,26 @@ struct ContentView: View {
                     print("⚙️ Processing Mode Changed: \(newValue ? "GPU" : "CPU") Processing")
                     print("🔧 GPU Acceleration: \(newValue ? "ENABLED" : "DISABLED")")
                 }
+            }
+            .padding(16)
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            
+            // Export Quality Selector
+            VStack(alignment: .leading) {
+                Text("Export Quality")
+                    .font(.subheadline)
+                
+                Picker("Export Quality", selection: $projectState.exportQuality) {
+                    ForEach(ExportQuality.allCases, id: \.self) { quality in
+                        Text(quality.description)
+                            .tag(quality)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accentColor(.purple)
             }
             .padding(16)
             .background(

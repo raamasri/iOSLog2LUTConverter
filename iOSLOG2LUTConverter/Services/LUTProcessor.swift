@@ -1151,21 +1151,27 @@ class LUTProcessor: ObservableObject {
         // Set up asset writer with enhanced quality settings
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         
+        // Create base compression properties
+        var compressionProperties: [String: Any] = [
+            AVVideoAverageBitRateKey: settings.outputQuality.bitRate,
+            AVVideoProfileLevelKey: settings.outputQuality.profileLevel,
+            AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+            AVVideoExpectedSourceFrameRateKey: 30,
+            AVVideoMaxKeyFrameIntervalKey: settings.outputQuality.keyFrameInterval,
+            AVVideoQualityKey: settings.outputQuality.compressionQuality
+        ]
+        
+        // Add wide color properties only for maximum quality to avoid codec compatibility issues
+        if settings.outputQuality == .maximum {
+            compressionProperties[AVVideoAllowWideColorKey] = true
+            compressionProperties[AVVideoColorPrimariesKey] = AVVideoColorPrimaries_ITU_R_2020
+        }
+        
         let writerInputSettings: [String: Any] = [
             AVVideoCodecKey: settings.outputQuality.codec,
             AVVideoWidthKey: outputSize.width,
             AVVideoHeightKey: outputSize.height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: settings.outputQuality.bitRate,
-                AVVideoProfileLevelKey: settings.outputQuality.profileLevel,
-                AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
-                AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoMaxKeyFrameIntervalKey: settings.outputQuality.keyFrameInterval,
-                AVVideoQualityKey: settings.outputQuality.compressionQuality,
-                // Enhanced settings for maximum quality
-                AVVideoAllowWideColorKey: settings.outputQuality == .maximum ? true : false,
-                AVVideoColorPrimariesKey: settings.outputQuality == .maximum ? AVVideoColorPrimaries_ITU_R_2020 : AVVideoColorPrimaries_ITU_R_709_2
-            ]
+            AVVideoCompressionPropertiesKey: compressionProperties
         ]
         
         let assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerInputSettings)

@@ -236,6 +236,9 @@ struct ContentView: View {
             // Verbose Log Section
             verboseLogSection
             
+            // Reset Button - Always available at bottom
+            resetSection
+            
             Spacer()
         }
         .padding(.horizontal, 20)
@@ -611,39 +614,9 @@ struct ContentView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Batch Processing Button (shown when batch mode is enabled)
+            // Batch Queue Section (shown when batch mode is enabled)
             if projectState.batchMode {
-                NavigationLink(destination: BatchProcessingView(projectState: projectState)) {
-                    HStack {
-                        Image(systemName: "square.stack.3d.up")
-                            .font(.title3)
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Batch Processing")
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                            
-                            Text("\(projectState.batchQueue.count) videos in queue")
-                                .font(.caption)
-                                .opacity(0.8)
-                        }
-                        
-                        Spacer()
-                        
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .opacity(0.6)
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(16)
-                    .background(
-                        Color.purple.gradient,
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    )
-                }
-                .buttonStyle(.plain)
-                .transition(.scale.combined(with: .opacity))
+                batchQueueSection
             }
             
             // Export Quality Selector
@@ -747,6 +720,166 @@ struct ContentView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
+    }
+    
+    // MARK: - Batch Queue Section
+    private var batchQueueSection: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.title3)
+                    .foregroundStyle(.purple)
+                
+                Text("Batch Queue")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                
+                Spacer()
+                
+                Text("\(projectState.batchQueue.count) videos")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            if projectState.batchQueue.isEmpty {
+                // Empty state
+                VStack(spacing: 8) {
+                    Image(systemName: "tray")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    
+                    Text("No videos in batch queue")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Text("Add videos to start batch processing")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 80)
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+            } else {
+                // Queue list
+                VStack(spacing: 6) {
+                    ForEach(Array(projectState.batchQueue.enumerated()), id: \.offset) { index, item in
+                        HStack(spacing: 12) {
+                            // Status indicator
+                            Circle()
+                                .fill(batchItemStatusColor(for: item.status))
+                                .frame(width: 8, height: 8)
+                            
+                            // Video info
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .lineLimit(1)
+                                
+                                Text(batchItemStatusText(for: item.status))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            // Progress indicator
+                            if item.status == .processing {
+                                ProgressView(value: item.progress)
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                                    .scaleEffect(0.7)
+                                    .frame(width: 20, height: 20)
+                            } else if item.status == .completed {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else if item.status == .failed {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
+                            
+                            // Remove button (only for pending items)
+                            if item.status == .pending && !projectState.isBatchProcessing {
+                                Button(action: {
+                                    projectState.removeVideoFromBatch(at: index)
+                                }) {
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            .ultraThinMaterial,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                    }
+                }
+                .frame(maxHeight: 200)
+                
+                // Batch controls
+                HStack(spacing: 8) {
+                    Button(action: {
+                        // Add more videos to batch
+                        selectedVideoItems = []
+                        // This will trigger the PhotosPicker
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.caption)
+                            Text("Add More")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            .regularMaterial,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(projectState.isBatchProcessing)
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        projectState.clearBatchQueue()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.circle.fill")
+                                .font(.caption)
+                            Text("Clear All")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            .regularMaterial,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .transition(.scale.combined(with: .opacity))
     }
     
     // MARK: - Status Section
@@ -913,6 +1046,29 @@ struct ContentView: View {
             .regularMaterial,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
+    }
+    
+    // MARK: - Reset Section
+    private var resetSection: some View {
+        Button(action: resetConversion) {
+            HStack {
+                Image(systemName: "arrow.clockwise")
+                    .font(.title3)
+                
+                Text("Reset All")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(16)
+            .background(
+                Color.red.gradient,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .transition(.scale.combined(with: .opacity))
     }
     
     // MARK: - Helper Methods for Status
@@ -1126,6 +1282,8 @@ struct ContentView: View {
     }
     
     private func resetConversion() {
+        projectState.logVideoOperation("Resetting all app data and selections", level: .info)
+        
         // Reset all conversion states
         isExporting = false
         exportProgress = 0.0
@@ -1147,12 +1305,19 @@ struct ContentView: View {
         projectState.setSecondaryLUT(nil)
         projectState.previewImage = nil
         
+        // Clear batch queue
+        projectState.clearBatchQueue()
+        
         // Reset opacity sliders
         projectState.primaryLUTOpacity = 1.0
         projectState.secondLUTOpacity = 1.0
+        projectState.whiteBalanceValue = 0.0
         
-        print("🔄 Conversion reset - ready for new conversion")
-        projectState.updateStatus("Ready for new conversion")
+        // Reset processing mode to single video
+        projectState.batchMode = false
+        
+        projectState.logVideoOperation("All data cleared - ready for new conversion", level: .success)
+        print("🔄 Complete app reset - ready for new conversion")
     }
     
     // MARK: - Helper Methods
@@ -1162,6 +1327,25 @@ struct ContentView: View {
         case .medium: return .medium
         case .high: return .high
         case .maximum: return .maximum
+        }
+    }
+
+    // MARK: - Helper Methods for Batch Queue
+    private func batchItemStatusColor(for status: ProjectState.BatchVideoItem.BatchVideoStatus) -> Color {
+        switch status {
+        case .pending: return .blue
+        case .processing: return .orange
+        case .completed: return .green
+        case .failed: return .red
+        }
+    }
+    
+    private func batchItemStatusText(for status: ProjectState.BatchVideoItem.BatchVideoStatus) -> String {
+        switch status {
+        case .pending: return "Pending"
+        case .processing: return "Processing"
+        case .completed: return "Completed"
+        case .failed: return "Failed"
         }
     }
 }

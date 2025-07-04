@@ -233,10 +233,13 @@ struct ContentView: View {
             // Status Section
             statusSection
             
+            // Verbose Log Section
+            verboseLogSection
+            
             Spacer()
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 24)
+        .padding(.vertical, 16)
     }
     
     // MARK: - App Title
@@ -698,7 +701,7 @@ struct ContentView: View {
             .disabled((projectState.batchMode ? projectState.batchQueue.isEmpty : videoCount == 0) || isExporting)
             
             // Save to Photos Button (shown after export)
-            if showingSaveToPhotos {
+            if showingShareSheet {
                 Button(action: saveToPhotos) {
                     HStack {
                         Image(systemName: isSavedToPhotos ? "checkmark.circle.fill" : "photo.badge.plus")
@@ -818,6 +821,100 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Verbose Log Section
+    private var verboseLogSection: some View {
+        VStack(spacing: 12) {
+            // Log Header with Toggle
+            HStack {
+                Text("System Log")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+                
+                Button(action: {
+                    projectState.showVerboseLog.toggle()
+                }) {
+                    Image(systemName: projectState.showVerboseLog ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Button(action: {
+                    projectState.clearLog()
+                }) {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            
+            // Log Content
+            if projectState.showVerboseLog {
+                ScrollView {
+                    ScrollViewReader { proxy in
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(projectState.verboseLog) { entry in
+                                HStack(alignment: .top, spacing: 8) {
+                                    // Icon
+                                    Image(systemName: entry.level.icon)
+                                        .font(.caption2)
+                                        .foregroundStyle(entry.level.color)
+                                        .frame(width: 12)
+                                    
+                                    // Timestamp
+                                    Text(entry.formattedTimestamp)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 60, alignment: .leading)
+                                    
+                                    // Category
+                                    Text(entry.category.rawValue)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 60, alignment: .leading)
+                                    
+                                    // Message
+                                    Text(entry.message)
+                                        .font(.caption2)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(
+                                    entry.level == .error ? Color.red.opacity(0.1) :
+                                    entry.level == .warning ? Color.orange.opacity(0.1) :
+                                    entry.level == .success ? Color.green.opacity(0.1) :
+                                    Color.clear
+                                )
+                                .cornerRadius(4)
+                                .id(entry.id)
+                            }
+                        }
+                        .padding(8)
+                        .onChange(of: projectState.verboseLog.count) { _, _ in
+                            // Auto-scroll to bottom when new log entries are added
+                            if let lastEntry = projectState.verboseLog.last {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    proxy.scrollTo(lastEntry.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+            }
+        }
+        .padding(16)
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+    }
+    
     // MARK: - Helper Methods for Status
     private func getStatusIcon() -> String {
         switch fileImportManager.lastImportStatus {
@@ -879,7 +976,7 @@ struct ContentView: View {
     
     // MARK: - Export Functionality
     @State private var exportedVideoURL: URL?
-    @State private var showingSaveToPhotos = false
+    @State private var showingShareSheet = false
     @State private var isExporting = false
     @State private var exportProgress: Double = 0.0
     @State private var exportStatusMessage = ""
@@ -892,13 +989,11 @@ struct ContentView: View {
         if projectState.batchMode {
             // Handle batch processing
             guard !projectState.batchQueue.isEmpty else {
-                print("❌ Batch Export: No videos in batch queue")
-                projectState.updateStatus("No videos in batch queue")
+                projectState.logBatchOperation("No videos in batch queue", level: .error)
                 return
             }
             
-            print("📦 Starting batch processing...")
-            print("📹 Videos in queue: \(projectState.batchQueue.count)")
+            projectState.logBatchOperation("Starting batch processing for \(projectState.batchQueue.count) videos", level: .info)
             
             Task {
                 await projectState.startBatchProcessing()
@@ -907,188 +1002,70 @@ struct ContentView: View {
         }
         
         // Handle single video processing
-        guard videoCount > 0, let videoURL = videoURLs.first else {
-            print("❌ Export: No video selected")
+        guard videoCount > 0, let firstVideo = projectState.videoURLs.first else {
+            projectState.logExportOperation("No video selected for export", level: .error)
             return
         }
         
-        print("🎬 Starting video export...")
-        print("📹 Video: \(videoURL.lastPathComponent)")
-        print("⚙️ Processing Mode: \(projectState.useGPU ? "GPU" : "CPU")")
+        projectState.logExportOperation("Starting video export process", level: .info)
+        projectState.logExportOperation("Input video: \(firstVideo.lastPathComponent)", level: .info)
+        projectState.logExportOperation("Export quality: \(projectState.exportQuality.rawValue)", level: .info)
         
-        if let primaryLUT = lutManager.selectedPrimaryLUT {
-            print("🎨 Primary LUT: \(primaryLUT.displayName) (Opacity: \(Int(projectState.primaryLUTOpacity * 100))%)")
-        }
-        if let secondaryLUT = lutManager.selectedSecondaryLUT {
-            print("🎭 Secondary LUT: \(secondaryLUT.displayName) (Opacity: \(Int(projectState.secondLUTOpacity * 100))%)")
-        }
-        if lutManager.selectedPrimaryLUT == nil && lutManager.selectedSecondaryLUT == nil {
-            print("📱 Exporting without LUT (original video)")
+        // Log LUT configuration
+        if let primaryLUT = projectState.primaryLUTURL {
+            projectState.logLUTOperation("Primary LUT: \(primaryLUT.lastPathComponent)", level: .info)
+            projectState.logLUTOperation("Primary LUT opacity: \(Int(projectState.primaryLUTOpacity * 100))%", level: .info)
         }
         
-        // Start export UI state
-        isExporting = true
-        exportProgress = 0.0
-        exportStatusMessage = "Initializing conversion..."
+        if let secondaryLUT = projectState.secondaryLUTURL {
+            projectState.logLUTOperation("Secondary LUT: \(secondaryLUT.lastPathComponent)", level: .info)
+            projectState.logLUTOperation("Secondary LUT opacity: \(Int(projectState.secondLUTOpacity * 100))%", level: .info)
+        }
+        
+        if projectState.whiteBalanceValue != 0 {
+            projectState.logExportOperation("White balance adjustment: \(projectState.formattedWhiteBalance)", level: .info)
+        }
+        
+        projectState.logGPUOperation("Using GPU acceleration for processing", level: .info)
         
         Task {
             do {
-                // Create temporary export folder
+                projectState.logExportOperation("Initializing video processor...", level: .info)
+                
+                // Create output directory
                 let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let exportFolder = documentsPath.appendingPathComponent("LUTexport")
+                let outputDirectory = documentsPath.appendingPathComponent("LUTexport")
                 
-                await MainActor.run {
-                    exportStatusMessage = "Creating export directory..."
-                    exportProgress = 0.1
-                }
+                let config = VideoProcessor.ProcessingConfig(
+                    videoURLs: projectState.videoURLs,
+                    primaryLUTURL: projectState.primaryLUTURL,
+                    secondaryLUTURL: projectState.secondaryLUTURL,
+                    primaryLUTOpacity: projectState.primaryLUTOpacity,
+                    secondaryLUTOpacity: projectState.secondLUTOpacity,
+                    whiteBalanceAdjustment: projectState.whiteBalanceValue,
+                    useGPUProcessing: projectState.useGPU,
+                    outputQuality: projectState.exportQuality.toLUTProcessorQuality(),
+                    outputDirectory: outputDirectory
+                )
                 
-                try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
-                print("📁 Export folder created: \(exportFolder.path)")
+                projectState.logExportOperation("Configuration created successfully", level: .success)
                 
-                let outputFilename = projectState.generateOutputFileName(for: videoURL)
-                let outputURL = exportFolder.appendingPathComponent(outputFilename)
+                let processor = VideoProcessor()
+                await processor.processVideos(config: config)
                 
-                // Remove existing file if it exists
-                if FileManager.default.fileExists(atPath: outputURL.path) {
-                    try FileManager.default.removeItem(at: outputURL)
-                    print("🗑️ Removed existing file: \(outputURL.lastPathComponent)")
-                }
-                
-                // Use VideoProcessor for actual LUT processing if LUTs are selected
-                if lutManager.selectedPrimaryLUT != nil || lutManager.selectedSecondaryLUT != nil {
-                    await MainActor.run {
-                        exportStatusMessage = "Processing video with LUTs..."
-                        exportProgress = 0.2
-                    }
+                if let result = processor.exportedVideoURLs.first {
+                    projectState.logExportOperation("Video export completed successfully", level: .success)
+                    projectState.logExportOperation("Output file: \(result.lastPathComponent)", level: .success)
                     
-                    print("🎨 Processing video with LUTs...")
-                    let videoProcessor = VideoProcessor()
-                    
-                    // Convert ExportQuality to LUTProcessor.OutputQuality
-                    let lutOutputQuality = convertToLUTProcessorQuality(projectState.exportQuality)
-                    
-                    let settings = VideoProcessor.ProcessingConfig(
-                        videoURLs: [videoURL],
-                        primaryLUTURL: lutManager.selectedPrimaryLUT?.url,
-                        secondaryLUTURL: lutManager.selectedSecondaryLUT?.url,
-                        primaryLUTOpacity: Float(projectState.primaryLUTOpacity),
-                        secondaryLUTOpacity: Float(projectState.secondLUTOpacity),
-                        whiteBalanceAdjustment: Float(projectState.whiteBalanceValue),
-                        useGPUProcessing: projectState.useGPU,
-                        outputQuality: lutOutputQuality,
-                        outputDirectory: exportFolder
-                    )
-                    
-                    // CRITICAL: Clean export folder before processing to avoid finding old files
-                    let exportedFiles = try FileManager.default.contentsOfDirectory(at: exportFolder, includingPropertiesForKeys: nil)
-                    for file in exportedFiles where file.pathExtension == "mp4" {
-                        try FileManager.default.removeItem(at: file)
-                        print("🗑️ Removed old export file: \(file.lastPathComponent)")
-                    }
-                    
-                    // Subscribe to progress updates
-                    let progressCancellable = videoProcessor.$exportProgress
-                        .receive(on: DispatchQueue.main)
-                        .sink { progress in
-                            self.exportProgress = 0.2 + (progress * 0.7) // Map to 20%-90%
-                        }
-                    
-                    let statusCancellable = videoProcessor.$statusMessage
-                        .receive(on: DispatchQueue.main)
-                        .sink { status in
-                            self.exportStatusMessage = status
-                        }
-                    
-                    // CRITICAL: Monitor for errors during processing
-                    let errorCancellable = videoProcessor.$lastError
-                        .receive(on: DispatchQueue.main)
-                        .sink { error in
-                            if let error = error {
-                                print("❌ VideoProcessor reported error: \(error.localizedDescription)")
-                            }
-                        }
-                    
-                    await videoProcessor.processVideos(config: settings)
-                    
-                    progressCancellable.cancel()
-                    statusCancellable.cancel()
-                    errorCancellable.cancel()
-                    
-                    // CRITICAL: Check if processing actually succeeded
-                    if let processingError = videoProcessor.lastError {
-                        print("❌ VideoProcessor failed: \(processingError.localizedDescription)")
-                        throw NSError(domain: "ExportError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Video processing failed: \(processingError.localizedDescription)"])
-                    }
-                    
-                    // CRITICAL: Verify VideoProcessor actually created files
-                    if videoProcessor.exportedVideoURLs.isEmpty {
-                        print("❌ VideoProcessor completed but no files were exported")
-                        throw NSError(domain: "ExportError", code: 3, userInfo: [NSLocalizedDescriptionKey: "No videos were exported successfully"])
-                    }
-                    
-                    // Use the file from VideoProcessor's exported list
-                    let actualOutputURL = videoProcessor.exportedVideoURLs.first!
-                    
-                    // Double-check the file exists and has reasonable size
-                    guard FileManager.default.fileExists(atPath: actualOutputURL.path) else {
-                        print("❌ Expected output file does not exist: \(actualOutputURL.path)")
-                        throw NSError(domain: "ExportError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Output file was not created"])
-                    }
-                    
-                    let fileAttributes = try FileManager.default.attributesOfItem(atPath: actualOutputURL.path)
-                    let fileSize = fileAttributes[.size] as? Int64 ?? 0
-                    
-                    if fileSize < 1024 { // Less than 1KB indicates failure
-                        print("❌ Output file is suspiciously small: \(fileSize) bytes")
-                        throw NSError(domain: "ExportError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Output file is too small (\(fileSize) bytes), processing may have failed"])
-                    }
-                    
-                    print("✅ Video processing verified successful: \(actualOutputURL.lastPathComponent) (Size: \(fileSize) bytes)")
-                    
-                    await MainActor.run {
-                        self.exportedVideoURL = actualOutputURL
-                        self.exportStatusMessage = "LUT processing completed!"
-                        self.exportProgress = 0.95
-                    }
-                    
-                    print("✅ LUT processing completed!")
+                    // Store the result for sharing
+                    exportedVideoURL = result
+                    showingShareSheet = true
                 } else {
-                    await MainActor.run {
-                        exportStatusMessage = "Copying original video..."
-                        exportProgress = 0.5
-                    }
-                    
-                    // Simple copy if no LUTs selected
-                    try FileManager.default.copyItem(at: videoURL, to: outputURL)
-                    print("📁 No LUTs selected - copied original video")
-                    
-                    await MainActor.run {
-                        self.exportedVideoURL = outputURL
-                        self.exportStatusMessage = "Video copied successfully!"
-                        self.exportProgress = 0.95
-                    }
+                    projectState.logExportOperation("Export failed: No output file generated", level: .error)
                 }
-                
-                await MainActor.run {
-                    self.exportStatusMessage = "Conversion completed!"
-                    self.exportProgress = 1.0
-                    self.isExporting = false
-                    self.isConversionComplete = true
-                    self.showingSaveToPhotos = true
-                }
-                
-                print("✅ Export completed successfully!")
-                print("📁 Exported to: \(self.exportedVideoURL?.path ?? "Unknown")")
                 
             } catch {
-                print("❌ Export failed: \(error.localizedDescription)")
-                await MainActor.run {
-                    self.isExporting = false
-                    self.exportProgress = 0.0
-                    self.exportStatusMessage = "Export failed: \(error.localizedDescription)"
-                    self.isConversionComplete = false
-                    projectState.updateStatus("Export failed: \(error.localizedDescription)")
-                }
+                projectState.logExportOperation("Export failed: \(error.localizedDescription)", level: .error)
             }
         }
     }
@@ -1154,7 +1131,7 @@ struct ContentView: View {
         exportProgress = 0.0
         exportStatusMessage = ""
         isConversionComplete = false
-        showingSaveToPhotos = false
+        showingShareSheet = false
         exportedVideoURL = nil
         isSavedToPhotos = false
         saveToPhotosMessage = ""

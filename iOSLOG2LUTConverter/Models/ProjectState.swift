@@ -30,6 +30,66 @@ class ProjectState: ObservableObject {
     @Published var rawPreviewImage: UIImage? // Raw preview without LUTs
     @Published var statusMessage: String = "Ready to import videos"
     
+    // MARK: - Verbose Logging Properties
+    @Published var verboseLog: [LogEntry] = []
+    @Published var showVerboseLog: Bool = true // Toggle for showing/hiding verbose log
+    private let maxLogEntries: Int = 100 // Maximum number of log entries to keep
+    
+    // Log Entry Structure
+    struct LogEntry: Identifiable, Equatable {
+        let id = UUID()
+        let timestamp: Date
+        let level: LogLevel
+        let category: LogCategory
+        let message: String
+        
+        enum LogLevel: String, CaseIterable {
+            case info = "INFO"
+            case success = "SUCCESS"
+            case warning = "WARNING"
+            case error = "ERROR"
+            case debug = "DEBUG"
+            
+            var icon: String {
+                switch self {
+                case .info: return "info.circle"
+                case .success: return "checkmark.circle"
+                case .warning: return "exclamationmark.triangle"
+                case .error: return "xmark.circle"
+                case .debug: return "ladybug"
+                }
+            }
+            
+            var color: Color {
+                switch self {
+                case .info: return .blue
+                case .success: return .green
+                case .warning: return .orange
+                case .error: return .red
+                case .debug: return .purple
+                }
+            }
+        }
+        
+        enum LogCategory: String, CaseIterable {
+            case system = "SYSTEM"
+            case video = "VIDEO"
+            case lut = "LUT"
+            case export = "EXPORT"
+            case preview = "PREVIEW"
+            case batch = "BATCH"
+            case gpu = "GPU"
+            case debug = "DEBUG"
+        }
+        
+        var formattedTimestamp: String {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .medium
+            formatter.dateStyle = .none
+            return formatter.string(from: timestamp)
+        }
+    }
+    
     // MARK: - Video Scrubbing Properties
     @Published var currentTime: Double = 0.0 // Current scrub position in seconds
     @Published var videoDuration: Double = 0.0 // Total video duration in seconds
@@ -101,6 +161,60 @@ class ProjectState: ObservableObject {
     
     // MARK: - Service Dependencies
     private let videoProcessor = VideoProcessor()
+    
+    // MARK: - Verbose Logging Methods
+    func log(_ message: String, level: LogEntry.LogLevel = .info, category: LogEntry.LogCategory = .system) {
+        let entry = LogEntry(
+            timestamp: Date(),
+            level: level,
+            category: category,
+            message: message
+        )
+        
+        // Add to verbose log
+        verboseLog.append(entry)
+        
+        // Keep only the last maxLogEntries
+        if verboseLog.count > maxLogEntries {
+            verboseLog.removeFirst()
+        }
+        
+        // Also print to console for debugging
+        let timestamp = entry.formattedTimestamp
+        print("[\(timestamp)] [\(level.rawValue)] [\(category.rawValue)] \(message)")
+        
+        // Update status message with the latest log entry
+        statusMessage = message
+    }
+    
+    func clearLog() {
+        verboseLog.removeAll()
+        log("Log cleared", level: .info, category: .system)
+    }
+    
+    func logVideoOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .video)
+    }
+    
+    func logLUTOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .lut)
+    }
+    
+    func logExportOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .export)
+    }
+    
+    func logPreviewOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .preview)
+    }
+    
+    func logBatchOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .batch)
+    }
+    
+    func logGPUOperation(_ message: String, level: LogEntry.LogLevel = .info) {
+        log(message, level: level, category: .gpu)
+    }
     
     func enableDebugMode() {
         print("🧪 Debug Mode: Initializing test environment...")
@@ -214,21 +328,52 @@ class ProjectState: ObservableObject {
         // For professional video editing, allow replacing videos
         // Clear existing videos first, then add the new one
         if !videoURLs.isEmpty {
-            print("🔄 ProjectState: Replacing existing video with new one")
+            logVideoOperation("Replacing existing video with new selection", level: .info)
             videoURLs.removeAll()
         }
         
         videoURLs.append(url)
-        updateStatus("Added video: \(url.lastPathComponent)")
-        print("🎬 ProjectState: Video added - \(url.lastPathComponent)")
+        logVideoOperation("Added video: \(url.lastPathComponent)", level: .success)
         
-        // Load video duration for scrubbing
+        // Log video details
+        let asset = AVAsset(url: url)
+        logVideoOperation("Analyzing video properties...", level: .info)
+        
+        // Get video duration and format info
         Task {
-            await loadVideoDuration(from: url)
+            do {
+                let duration = try await asset.load(.duration)
+                let tracks = try await asset.load(.tracks)
+                
+                await MainActor.run {
+                    logVideoOperation("Video duration: \(String(format: "%.2f", duration.seconds))s", level: .info)
+                    logVideoOperation("Video tracks: \(tracks.count)", level: .info)
+                    
+                    if let videoTrack = tracks.first(where: { $0.mediaType == .video }) {
+                        Task {
+                            do {
+                                let naturalSize = try await videoTrack.load(.naturalSize)
+                                let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
+                                await MainActor.run {
+                                    logVideoOperation("Resolution: \(Int(naturalSize.width))x\(Int(naturalSize.height))", level: .info)
+                                    logVideoOperation("Frame rate: \(String(format: "%.2f", nominalFrameRate)) fps", level: .info)
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    logVideoOperation("Could not load video track details: \(error.localizedDescription)", level: .warning)
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    logVideoOperation("Could not analyze video: \(error.localizedDescription)", level: .warning)
+                }
+            }
         }
         
-        // Force immediate preview generation
-        print("🔄 ProjectState: Forcing preview generation after video addition...")
+        // Generate initial preview
         generatePreview()
     }
     
@@ -454,10 +599,18 @@ class ProjectState: ObservableObject {
         return .success
     }
     
-    // MARK: - iOS-Specific Methods
+    // MARK: - Status Management
     func updateStatus(_ message: String) {
-        statusMessage = message
-        print("📱 Status: \(message)")
+        log(message, level: .info, category: .system)
+    }
+    
+    // MARK: - Initialization
+    init() {
+        log("iOS LUT Converter initialized", level: .success, category: .system)
+        log("Ready to import videos", level: .info, category: .system)
+        
+        // Initialize with GPU processing enabled
+        logGPUOperation("GPU processing enabled by default", level: .info)
     }
     
     func generatePreview() {

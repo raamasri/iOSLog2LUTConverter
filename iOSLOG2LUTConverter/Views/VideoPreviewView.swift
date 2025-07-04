@@ -154,35 +154,78 @@ struct VideoPreviewView: View {
         VStack {
             Spacer()
             
-            HStack(spacing: 20) {
-                // Previous frame
-                Button(action: {}) {
-                    Image(systemName: "backward.frame.fill")
-                        .font(.title2)
+            // Timeline Scrubber
+            VStack(spacing: 12) {
+                // Time display
+                HStack {
+                    Text(formatTime(projectState.currentTime))
+                        .font(.caption)
+                        .fontWeight(.medium)
                         .foregroundStyle(.white)
+                    
+                    Spacer()
+                    
+                    Text(formatTime(projectState.videoDuration))
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white.opacity(0.7))
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 4)
                 
-                // Play/Pause
-                Button(action: {}) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 60))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.3), radius: 5)
+                // Scrubbing timeline
+                VStack(spacing: 8) {
+                    if projectState.videoDuration > 0 {
+                        Slider(
+                            value: Binding(
+                                get: { projectState.currentTime },
+                                set: { newTime in
+                                    projectState.scrubToTime(newTime)
+                                }
+                            ),
+                            in: 0...projectState.videoDuration
+                        ) {
+                            // Label
+                        } minimumValueLabel: {
+                            Image(systemName: "backward.end.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
+                        } maximumValueLabel: {
+                            Image(systemName: "forward.end.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                        .tint(.blue)
+                        .disabled(projectState.isScrubbing || projectState.isPreviewLoading)
+                        
+                        // Loading indicator for scrubbing
+                        if projectState.isScrubbing {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                
+                                Text("Generating preview...")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                    } else {
+                        // Placeholder when no video duration is available
+                        HStack(spacing: 8) {
+                            Image(systemName: "video.slash")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.5))
+                            
+                            Text("Load video to enable scrubbing")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                
-                // Next frame
-                Button(action: {}) {
-                    Image(systemName: "forward.frame.fill")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
             }
-            .padding(20)
+            .padding(16)
             .background(
-                .ultraThinMaterial.opacity(0.7),
+                .ultraThinMaterial.opacity(0.8),
                 in: RoundedRectangle(cornerRadius: 16, style: .continuous)
             )
             .padding(.bottom, 20)
@@ -272,6 +315,17 @@ struct VideoPreviewView: View {
                  projectState.updateStatus("Placeholder preview ready")
              }
         }
+    }
+    
+    // MARK: - Helper Methods
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite && !seconds.isNaN else { return "0:00" }
+        
+        let totalSeconds = Int(seconds)
+        let minutes = totalSeconds / 60
+        let remainingSeconds = totalSeconds % 60
+        
+        return String(format: "%d:%02d", minutes, remainingSeconds)
     }
 }
 

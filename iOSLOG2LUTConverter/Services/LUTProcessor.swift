@@ -1413,6 +1413,38 @@ class LUTProcessor: ObservableObject {
         return processedImage ?? ciImage
     }
     
+    // MARK: - Time-Specific Preview Generation for Scrubbing
+    func generatePreviewAtTime(from videoURL: URL, timeSeconds: Double, settings: LUTSettings) async throws -> CIImage {
+        print("🎨 LUT Processor: Starting preview generation at \(timeSeconds)s...")
+        
+        // CRITICAL: Load LUT filters before processing
+        try loadLUTFilters(settings: settings)
+        print("✅ LUT filters loaded for preview generation at \(timeSeconds)s")
+        
+        let asset = AVAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.1, preferredTimescale: 600)
+        
+        let time = CMTime(seconds: timeSeconds, preferredTimescale: 600)
+        let cgImage = try await generator.image(at: time).image
+        
+        let ciImage = CIImage(cgImage: cgImage)
+        print("🎨 Applying LUT processing to preview image at \(timeSeconds)s...")
+        
+        // Apply LUT processing using simplified direct method
+        let processedImage = processImageDirect(ciImage, settings: settings)
+        
+        if processedImage != nil {
+            print("✅ LUT processing applied successfully to preview at \(timeSeconds)s")
+        } else {
+            print("⚠️ LUT processing returned nil at \(timeSeconds)s, using original image")
+        }
+        
+        return processedImage ?? ciImage
+    }
+    
     // MARK: - Status Management
     private func updateStatus(_ message: String) {
         DispatchQueue.main.async {

@@ -29,6 +29,11 @@ class ProjectState: ObservableObject {
     @Published var statusMessage: String = "Ready to import videos"
     @Published var showBeforeAfter: Bool = false // Toggle for before/after view
     
+    // MARK: - Video Scrubbing Properties
+    @Published var currentTime: Double = 0.0 // Current scrub position in seconds
+    @Published var videoDuration: Double = 0.0 // Total video duration in seconds
+    @Published var isScrubbing: Bool = false // Whether user is actively scrubbing
+    
     // MARK: - Background Processing
     @Published var backgroundExportProgress: [String: Double] = [:]
     @Published var canExportInBackground: Bool = false
@@ -160,9 +165,138 @@ class ProjectState: ObservableObject {
         updateStatus("Added video: \(url.lastPathComponent)")
         print("🎬 ProjectState: Video added - \(url.lastPathComponent)")
         
+        // Load video duration for scrubbing
+        Task {
+            await loadVideoDuration(from: url)
+        }
+        
         // Force immediate preview generation
         print("🔄 ProjectState: Forcing preview generation after video addition...")
         generatePreview()
+    }
+    
+    // MARK: - Video Scrubbing Methods
+    private func loadVideoDuration(from url: URL) async {
+        do {
+            let asset = AVAsset(url: url)
+            let duration = try await asset.load(.duration)
+            let durationSeconds = duration.seconds
+            
+            await MainActor.run {
+                self.videoDuration = durationSeconds
+                self.currentTime = 0.0 // Reset to beginning
+                print("🎬 Video duration loaded: \(durationSeconds) seconds")
+            }
+        } catch {
+            print("❌ Failed to load video duration: \(error.localizedDescription)")
+            await MainActor.run {
+                self.videoDuration = 0.0
+            }
+        }
+    }
+    
+    func scrubToTime(_ time: Double) {
+        guard videoDuration > 0 else { return }
+        
+        // Clamp time to valid range
+        let clampedTime = max(0.0, min(time, videoDuration))
+        currentTime = clampedTime
+        
+        print("🎯 Scrubbing to time: \(clampedTime)s")
+        
+        // Generate preview at this specific time
+        generatePreviewAtTime(clampedTime)
+    }
+    
+    func generatePreviewAtTime(_ timeSeconds: Double) {
+        guard !videoURLs.isEmpty else { return }
+        
+        print("🎬 Generating preview at \(timeSeconds)s")
+        isPreviewLoading = true
+        isScrubbing = true
+        
+        Task {
+            do {
+                let videoURL = videoURLs[0]
+                
+                // Generate raw preview at specific time
+                let rawPreview = try await generateRawPreviewAtTime(videoURL: videoURL, timeSeconds: timeSeconds)
+                
+                // Generate LUT-processed preview if LUTs are selected
+                if primaryLUTURL != nil || secondaryLUTURL != nil {
+                    let videoProcessor = VideoProcessor()
+                    
+                    let lutOutputQuality: LUTProcessor.OutputQuality = {
+                        switch exportQuality {
+                        case .low: return .low
+                        case .medium: return .medium
+                        case .high: return .high
+                        case .maximum: return .maximum
+                        }
+                    }()
+                    
+                    let settings = VideoProcessor.ProcessingConfig(
+                        videoURLs: [videoURL],
+                        primaryLUTURL: primaryLUTURL,
+                        secondaryLUTURL: secondaryLUTURL,
+                        primaryLUTOpacity: Float(primaryLUTOpacity),
+                        secondaryLUTOpacity: Float(secondLUTOpacity),
+                        whiteBalanceAdjustment: Float(whiteBalanceValue),
+                        useGPUProcessing: useGPU,
+                        outputQuality: lutOutputQuality,
+                        outputDirectory: FileManager.default.temporaryDirectory
+                    )
+                    
+                    let processedPreview = try await videoProcessor.generatePreviewAtTime(
+                        videoURL: videoURL, 
+                        timeSeconds: timeSeconds, 
+                        settings: settings
+                    )
+                    
+                    await MainActor.run {
+                        self.rawPreviewImage = rawPreview
+                        self.previewImage = processedPreview
+                        self.isPreviewLoading = false
+                        self.isScrubbing = false
+                        print("✅ Preview generated at \(timeSeconds)s with LUTs")
+                    }
+                } else {
+                    await MainActor.run {
+                        self.rawPreviewImage = rawPreview
+                        self.previewImage = rawPreview
+                        self.isPreviewLoading = false
+                        self.isScrubbing = false
+                        print("✅ Raw preview generated at \(timeSeconds)s")
+                    }
+                }
+                
+            } catch {
+                await MainActor.run {
+                    self.isPreviewLoading = false
+                    self.isScrubbing = false
+                    print("❌ Failed to generate preview at \(timeSeconds)s: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    private func generateRawPreviewAtTime(videoURL: URL, timeSeconds: Double) async throws -> UIImage {
+        let asset = AVAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.1, preferredTimescale: 600)
+        
+        let time = CMTime(seconds: timeSeconds, preferredTimescale: 600)
+        
+        do {
+            let result = try await generator.image(at: time)
+            let cgImage = result.image
+            return UIImage(cgImage: cgImage)
+        } catch {
+            print("❌ Failed to generate raw preview at \(timeSeconds)s: \(error.localizedDescription)")
+            throw error
+        }
     }
     
     // MARK: - Debug Methods
@@ -827,7 +961,7 @@ struct ProjectSettings: Codable {
     let whiteBalance: Float
     let useGPU: Bool
     let quality: ExportQuality
-} 
+}
 
 // MARK: - Extensions  
 // Note: LUTProcessor.OutputQuality extension will be added when LUTProcessor is imported 

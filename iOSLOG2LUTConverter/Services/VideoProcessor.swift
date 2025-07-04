@@ -236,6 +236,32 @@ class VideoProcessor: ObservableObject {
         return UIImage(cgImage: cgImage)
     }
     
+    // MARK: - Time-Specific Preview Generation for Scrubbing
+    func generatePreviewAtTime(videoURL: URL, timeSeconds: Double, settings: ProcessingConfig) async throws -> UIImage {
+        print("🎬 VideoProcessor: Generating preview at \(timeSeconds)s...")
+        
+        let lutSettings = LUTProcessor.LUTSettings(
+            primaryLUTURL: settings.primaryLUTURL,
+            secondaryLUTURL: settings.secondaryLUTURL,
+            primaryLUTOpacity: settings.primaryLUTOpacity,
+            secondaryLUTOpacity: settings.secondaryLUTOpacity,
+            whiteBalanceAdjustment: settings.whiteBalanceAdjustment,
+            useGPUProcessing: settings.useGPUProcessing,
+            outputQuality: settings.outputQuality
+        )
+        
+        let ciImage = try await lutProcessor.generatePreviewAtTime(from: videoURL, timeSeconds: timeSeconds, settings: lutSettings)
+        
+        // Convert CIImage to UIImage
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            throw ProcessingError.processingFailed("Could not generate preview image at \(timeSeconds)s")
+        }
+        
+        print("✅ VideoProcessor: Preview generated at \(timeSeconds)s")
+        return UIImage(cgImage: cgImage)
+    }
+    
     // MARK: - Cancellation
     func cancelProcessing() {
         guard isExporting else { return }

@@ -1035,45 +1035,63 @@ class LUTProcessor: ObservableObject {
             throw LUTProcessingError.videoProcessingFailed("No video track found")
         }
         
+        let naturalSize = try await videoTrack.load(.naturalSize)
+        print("🎬 Processing video: \(Int(naturalSize.width))x\(Int(naturalSize.height))")
+        
+        // Use better pixel format for 4K video processing
         let readerOutputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferMetalCompatibilityKey as String: true
         ]
         
         let assetReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         assetReader.add(assetReaderOutput)
         
-        // Set up asset writer
+        // Set up asset writer with improved settings for 4K
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         
-        let naturalSize = try await videoTrack.load(.naturalSize)
+        // Improved writer settings for better compatibility
         let writerInputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: naturalSize.width,
             AVVideoHeightKey: naturalSize.height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: settings.outputQuality.bitRate
+                AVVideoAverageBitRateKey: settings.outputQuality.bitRate,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+                AVVideoExpectedSourceFrameRateKey: 30,
+                AVVideoMaxKeyFrameIntervalKey: 30
             ]
         ]
         
         let assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerInputSettings)
         assetWriterInput.expectsMediaDataInRealTime = false
         
+        // Improved pixel buffer attributes for better memory management
+        let pixelBufferAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: Int(naturalSize.width),
+            kCVPixelBufferHeightKey as String: Int(naturalSize.height),
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        
         let pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: assetWriterInput,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-            ]
+            sourcePixelBufferAttributes: pixelBufferAttributes
         )
         
         assetWriter.add(assetWriterInput)
         
         // Start reading and writing
         guard assetReader.startReading() else {
-            throw LUTProcessingError.videoProcessingFailed("Could not start reading asset")
+            let error = assetReader.error?.localizedDescription ?? "Unknown reader error"
+            throw LUTProcessingError.videoProcessingFailed("Could not start reading asset: \(error)")
         }
         
         guard assetWriter.startWriting() else {
-            throw LUTProcessingError.exportFailed("Could not start writing asset")
+            let error = assetWriter.error?.localizedDescription ?? "Unknown writer error"
+            throw LUTProcessingError.exportFailed("Could not start writing asset: \(error)")
         }
         
         assetWriter.startSession(atSourceTime: .zero)
@@ -1082,44 +1100,77 @@ class LUTProcessor: ObservableObject {
         var frameCount = 0
         let totalFrames = Int(duration.seconds * 30) // Estimate based on 30fps
         
-        // Process frames
-        while assetReader.status == .reading {
-            if assetWriterInput.isReadyForMoreMediaData {
-                if let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
-                    
-                    // Apply LUT processing to this frame
-                    let inputImage = CIImage(cvPixelBuffer: pixelBuffer)
-                    let processedImage = processImage(inputImage, settings: settings) ?? inputImage
-                    
-                    // Create output pixel buffer
-                    var outputPixelBuffer: CVPixelBuffer?
-                    let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferAdaptor.pixelBufferPool!, &outputPixelBuffer)
-                    guard status == kCVReturnSuccess, let finalPixelBuffer = outputPixelBuffer else { continue }
-                    
-                    // Render processed image to output buffer
-                    context.render(processedImage, to: finalPixelBuffer)
-                    
-                    // Get presentation time
-                    let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                    
-                    // Append to writer
-                    pixelBufferAdaptor.append(finalPixelBuffer, withPresentationTime: presentationTime)
-                    
-                    frameCount += 1
-                    if frameCount % 30 == 0 { // Update progress every 30 frames
-                        let progress = Double(frameCount) / Double(totalFrames)
-                        updateProgress(min(0.9, progress)) // Cap at 90% until completion
-                        print("🎬 Processed frame \(frameCount)/\(totalFrames) (\(Int(progress * 100))%)")
+        print("🎬 Starting frame-by-frame processing for \(totalFrames) frames...")
+        
+        // Process frames with better error handling and memory management
+        var shouldContinue = true
+        while assetReader.status == .reading && shouldContinue {
+            autoreleasepool {
+                if assetWriterInput.isReadyForMoreMediaData {
+                    if let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                        
+                        // Apply LUT processing to this frame
+                        let inputImage = CIImage(cvPixelBuffer: pixelBuffer)
+                        let processedImage = processImage(inputImage, settings: settings) ?? inputImage
+                        
+                        // Create output pixel buffer with better error handling
+                        var outputPixelBuffer: CVPixelBuffer?
+                        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferAdaptor.pixelBufferPool!, &outputPixelBuffer)
+                        
+                        if poolStatus != kCVReturnSuccess {
+                            print("❌ Failed to create pixel buffer from pool: \(poolStatus)")
+                            return
+                        }
+                        
+                        guard let finalPixelBuffer = outputPixelBuffer else {
+                            print("❌ Created pixel buffer is nil")
+                            return
+                        }
+                        
+                        // Render processed image to output buffer
+                        context.render(processedImage, to: finalPixelBuffer)
+                        
+                        // Get presentation time
+                        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                        
+                        // Append to writer with error checking
+                        let appendSuccess = pixelBufferAdaptor.append(finalPixelBuffer, withPresentationTime: presentationTime)
+                        if !appendSuccess {
+                            print("❌ Failed to append pixel buffer at frame \(frameCount)")
+                            if let writerError = assetWriter.error {
+                                print("❌ Writer error: \(writerError.localizedDescription)")
+                            }
+                        }
+                        
+                        frameCount += 1
+                        if frameCount % 30 == 0 { // Update progress every 30 frames
+                            let progress = Double(frameCount) / Double(totalFrames)
+                            updateProgress(min(0.9, progress)) // Cap at 90% until completion
+                            print("🎬 Processed frame \(frameCount)/\(totalFrames) (\(Int(progress * 100))%)")
+                        }
+                        
+                        // Force memory cleanup for 4K processing
+                        if frameCount % 60 == 0 {
+                            CFRunLoopRunInMode(.defaultMode, 0, false)
+                        }
+                    } else {
+                        // No more frames
+                        shouldContinue = false
                     }
                 } else {
-                    // No more frames
-                    break
+                    // Wait a bit for the writer to be ready
+                    Thread.sleep(forTimeInterval: 0.01) // 10ms
                 }
-            } else {
-                // Wait a bit for the writer to be ready
-                try await Task.sleep(nanoseconds: 10_000_000) // 10ms
             }
+        }
+        
+        print("🎬 Finished processing \(frameCount) frames")
+        
+        // Check for reader errors
+        if assetReader.status == .failed {
+            let error = assetReader.error?.localizedDescription ?? "Unknown reader error"
+            throw LUTProcessingError.videoProcessingFailed("Asset reader failed: \(error)")
         }
         
         // Finish writing
@@ -1128,8 +1179,12 @@ class LUTProcessor: ObservableObject {
         
         updateProgress(1.0)
         
-        if assetWriter.status != .completed {
-            throw LUTProcessingError.exportFailed("Asset writer failed with status: \(assetWriter.status.rawValue)")
+        // Check final status
+        if assetWriter.status == .failed {
+            let error = assetWriter.error?.localizedDescription ?? "Unknown writer error"
+            throw LUTProcessingError.exportFailed("Asset writer failed: \(error)")
+        } else if assetWriter.status != .completed {
+            throw LUTProcessingError.exportFailed("Asset writer finished with unexpected status: \(assetWriter.status.rawValue)")
         }
         
         print("✅ LUT Processor: Frame-by-frame processing completed successfully")

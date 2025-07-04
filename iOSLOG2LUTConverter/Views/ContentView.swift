@@ -815,6 +815,13 @@ struct ContentView: View {
                         outputDirectory: exportFolder
                     )
                     
+                    // CRITICAL: Clean export folder before processing to avoid finding old files
+                    let exportedFiles = try FileManager.default.contentsOfDirectory(at: exportFolder, includingPropertiesForKeys: nil)
+                    for file in exportedFiles where file.pathExtension == "mp4" {
+                        try FileManager.default.removeItem(at: file)
+                        print("🗑️ Removed old export file: \(file.lastPathComponent)")
+                    }
+                    
                     // Subscribe to progress updates
                     let progressCancellable = videoProcessor.$exportProgress
                         .receive(on: DispatchQueue.main)
@@ -828,22 +835,56 @@ struct ContentView: View {
                             self.exportStatusMessage = status
                         }
                     
+                    // CRITICAL: Monitor for errors during processing
+                    let errorCancellable = videoProcessor.$lastError
+                        .receive(on: DispatchQueue.main)
+                        .sink { error in
+                            if let error = error {
+                                print("❌ VideoProcessor reported error: \(error.localizedDescription)")
+                            }
+                        }
+                    
                     await videoProcessor.processVideos(config: settings)
                     
                     progressCancellable.cancel()
                     statusCancellable.cancel()
+                    errorCancellable.cancel()
                     
-                    // Find the actual output file (VideoProcessor may change the name)
-                    let exportedFiles = try FileManager.default.contentsOfDirectory(at: exportFolder, includingPropertiesForKeys: nil)
-                    if let actualOutputURL = exportedFiles.first(where: { $0.pathExtension == "mp4" }) {
-                        print("✅ Found exported file: \(actualOutputURL.path)")
-                        await MainActor.run {
-                            self.exportedVideoURL = actualOutputURL
-                            self.exportStatusMessage = "LUT processing completed!"
-                            self.exportProgress = 0.95
-                        }
-                    } else {
-                        throw NSError(domain: "ExportError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Exported file not found"])
+                    // CRITICAL: Check if processing actually succeeded
+                    if let processingError = videoProcessor.lastError {
+                        print("❌ VideoProcessor failed: \(processingError.localizedDescription)")
+                        throw NSError(domain: "ExportError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Video processing failed: \(processingError.localizedDescription)"])
+                    }
+                    
+                    // CRITICAL: Verify VideoProcessor actually created files
+                    if videoProcessor.exportedVideoURLs.isEmpty {
+                        print("❌ VideoProcessor completed but no files were exported")
+                        throw NSError(domain: "ExportError", code: 3, userInfo: [NSLocalizedDescriptionKey: "No videos were exported successfully"])
+                    }
+                    
+                    // Use the file from VideoProcessor's exported list
+                    let actualOutputURL = videoProcessor.exportedVideoURLs.first!
+                    
+                    // Double-check the file exists and has reasonable size
+                    guard FileManager.default.fileExists(atPath: actualOutputURL.path) else {
+                        print("❌ Expected output file does not exist: \(actualOutputURL.path)")
+                        throw NSError(domain: "ExportError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Output file was not created"])
+                    }
+                    
+                    let fileAttributes = try FileManager.default.attributesOfItem(atPath: actualOutputURL.path)
+                    let fileSize = fileAttributes[.size] as? Int64 ?? 0
+                    
+                    if fileSize < 1024 { // Less than 1KB indicates failure
+                        print("❌ Output file is suspiciously small: \(fileSize) bytes")
+                        throw NSError(domain: "ExportError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Output file is too small (\(fileSize) bytes), processing may have failed"])
+                    }
+                    
+                    print("✅ Video processing verified successful: \(actualOutputURL.lastPathComponent) (Size: \(fileSize) bytes)")
+                    
+                    await MainActor.run {
+                        self.exportedVideoURL = actualOutputURL
+                        self.exportStatusMessage = "LUT processing completed!"
+                        self.exportProgress = 0.95
                     }
                     
                     print("✅ LUT processing completed!")

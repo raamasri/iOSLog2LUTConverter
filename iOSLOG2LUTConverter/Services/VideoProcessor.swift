@@ -130,12 +130,33 @@ class VideoProcessor: ObservableObject {
             
             do {
                 let outputURL = generateOutputURL(for: videoURL, in: config.outputDirectory, settings: lutSettings)
+                
+                // CRITICAL: Remove any existing file first to avoid false positives
+                if FileManager.default.fileExists(atPath: outputURL.path) {
+                    try FileManager.default.removeItem(at: outputURL)
+                    print("🗑️ Removed existing file before processing: \(outputURL.lastPathComponent)")
+                }
+                
                 try await lutProcessor.processVideo(videoURL, settings: lutSettings, outputURL: outputURL)
                 
+                // CRITICAL: Verify the file was actually created and has reasonable size
+                guard FileManager.default.fileExists(atPath: outputURL.path) else {
+                    throw ProcessingError.exportFailed("Output file was not created")
+                }
+                
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+                let fileSize = fileAttributes[.size] as? Int64 ?? 0
+                
+                if fileSize < 1024 { // Less than 1KB indicates failure
+                    throw ProcessingError.exportFailed("Output file is too small (\(fileSize) bytes), indicating processing failure")
+                }
+                
+                print("✅ Successfully processed video: \(outputURL.lastPathComponent) (Size: \(fileSize) bytes)")
                 exportedVideoURLs.append(outputURL)
                 updateOverallProgress(videoIndex: index + 1)
                 
             } catch {
+                print("❌ VideoProcessor: Processing failed for video \(index + 1): \(error.localizedDescription)")
                 await handleError(.processingFailed(error.localizedDescription))
                 return
             }

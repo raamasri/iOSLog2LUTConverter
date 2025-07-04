@@ -38,6 +38,32 @@ class ProjectState: ObservableObject {
     @Published var beforeAfterMode: BeforeAfterMode = .sideBySide // Comparison display mode
     @Published var beforeAfterSplit: Double = 0.5 // Split position for overlay mode (0.0 to 1.0)
     
+    // MARK: - Batch Processing Properties
+    @Published var batchMode: Bool = false // Toggle for batch processing mode
+    @Published var batchQueue: [BatchVideoItem] = [] // Queue of videos to process
+    @Published var currentBatchIndex: Int = 0 // Currently processing video index
+    @Published var batchProgress: Double = 0.0 // Overall batch progress (0.0 to 1.0)
+    @Published var isBatchProcessing: Bool = false // True when batch processing is active
+    @Published var batchProcessingStatus: String = "" // Status message for batch processing
+    
+    // MARK: - Batch Processing Data Models
+    struct BatchVideoItem: Identifiable, Equatable {
+        let id = UUID()
+        let url: URL
+        let name: String
+        var status: BatchVideoStatus = .pending
+        var progress: Double = 0.0
+        var outputURL: URL?
+        var errorMessage: String?
+        
+        enum BatchVideoStatus {
+            case pending
+            case processing
+            case completed
+            case failed
+        }
+    }
+    
     enum BeforeAfterMode: String, CaseIterable {
         case sideBySide = "side_by_side"
         case verticalSplit = "vertical_split"
@@ -70,6 +96,9 @@ class ProjectState: ObservableObject {
     
     // MARK: - Debug/Test Mode
     @Published var isDebugMode = false
+    
+    // MARK: - Service Dependencies
+    private let videoProcessor = VideoProcessor()
     
     func enableDebugMode() {
         print("🧪 Debug Mode: Initializing test environment...")
@@ -923,6 +952,152 @@ class ProjectState: ObservableObject {
             }
         }
     }
+    
+    // MARK: - Batch Processing Methods
+    
+    func addVideoToBatch(_ url: URL) {
+        let videoName = url.lastPathComponent
+        let batchItem = BatchVideoItem(url: url, name: videoName)
+        batchQueue.append(batchItem)
+        print("📦 Added video to batch: \(videoName)")
+    }
+    
+    func addVideosToBatch(_ urls: [URL]) {
+        for url in urls {
+            addVideoToBatch(url)
+        }
+        print("📦 Added \(urls.count) videos to batch queue")
+    }
+    
+    func removeVideoFromBatch(at index: Int) {
+        guard index < batchQueue.count else { return }
+        let removedItem = batchQueue.remove(at: index)
+        print("📦 Removed video from batch: \(removedItem.name)")
+    }
+    
+    func removeVideoFromBatch(id: UUID) {
+        batchQueue.removeAll { $0.id == id }
+        print("📦 Removed video from batch by ID")
+    }
+    
+    func clearBatchQueue() {
+        batchQueue.removeAll()
+        currentBatchIndex = 0
+        batchProgress = 0.0
+        batchProcessingStatus = ""
+        print("📦 Cleared batch queue")
+    }
+    
+    func reorderBatchQueue(from source: IndexSet, to destination: Int) {
+        batchQueue.move(fromOffsets: source, toOffset: destination)
+        print("📦 Reordered batch queue")
+    }
+    
+    func startBatchProcessing() async {
+        guard !batchQueue.isEmpty else {
+            print("❌ Cannot start batch processing: queue is empty")
+            return
+        }
+        
+        guard primaryLUTURL != nil || secondaryLUTURL != nil else {
+            print("❌ Cannot start batch processing: no LUTs selected")
+            batchProcessingStatus = "Error: No LUTs selected"
+            return
+        }
+        
+        isBatchProcessing = true
+        currentBatchIndex = 0
+        batchProgress = 0.0
+        batchProcessingStatus = "Starting batch processing..."
+        
+        print("📦 Starting batch processing of \(batchQueue.count) videos")
+        
+        for (index, var batchItem) in batchQueue.enumerated() {
+            currentBatchIndex = index
+            batchItem.status = .processing
+            batchItem.progress = 0.0
+            batchQueue[index] = batchItem
+            
+            batchProcessingStatus = "Processing \(batchItem.name) (\(index + 1)/\(batchQueue.count))"
+            print("📦 Processing video \(index + 1)/\(batchQueue.count): \(batchItem.name)")
+            
+            do {
+                // Process the video using existing VideoProcessor
+                let outputURL = try await processBatchVideo(batchItem)
+                
+                // Update batch item with success
+                batchQueue[index].status = .completed
+                batchQueue[index].progress = 1.0
+                batchQueue[index].outputURL = outputURL
+                
+                print("✅ Completed processing: \(batchItem.name)")
+                
+            } catch {
+                // Update batch item with error
+                batchQueue[index].status = .failed
+                batchQueue[index].errorMessage = error.localizedDescription
+                
+                print("❌ Failed to process: \(batchItem.name) - \(error.localizedDescription)")
+            }
+            
+            // Update overall progress
+            batchProgress = Double(index + 1) / Double(batchQueue.count)
+        }
+        
+        isBatchProcessing = false
+        batchProcessingStatus = "Batch processing completed"
+        print("📦 Batch processing completed")
+    }
+    
+    private func processBatchVideo(_ batchItem: BatchVideoItem) async throws -> URL {
+        // Create output directory for batch processing
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let outputDirectory = documentsPath.appendingPathComponent("BatchOutput")
+        
+        // Ensure output directory exists
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
+        
+        // Create processing config
+        let config = VideoProcessor.ProcessingConfig(
+            videoURLs: [batchItem.url],
+            primaryLUTURL: primaryLUTURL,
+            secondaryLUTURL: secondaryLUTURL,
+            primaryLUTOpacity: primaryLUTOpacity,
+            secondaryLUTOpacity: secondLUTOpacity,
+            whiteBalanceAdjustment: whiteBalanceValue,
+            useGPUProcessing: useGPU,
+            outputQuality: exportQuality.toLUTProcessorQuality(),
+            outputDirectory: outputDirectory
+        )
+        
+        // Process the video
+        await videoProcessor.processVideos(config: config)
+        
+        // Check if processing was successful
+        guard !videoProcessor.exportedVideoURLs.isEmpty else {
+            throw NSError(domain: "BatchProcessing", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to process video: \(batchItem.name)"])
+        }
+        
+        return videoProcessor.exportedVideoURLs.first!
+    }
+    
+    var batchProcessingProgress: Double {
+        return batchProgress
+    }
+    
+    var batchProcessingStatusMessage: String {
+        if isBatchProcessing {
+            let completedCount = batchQueue.filter { $0.status == .completed }.count
+            let failedCount = batchQueue.filter { $0.status == .failed }.count
+            return "Processing: \(completedCount) completed, \(failedCount) failed, \(batchQueue.count - completedCount - failedCount) remaining"
+        } else if !batchQueue.isEmpty {
+            let completedCount = batchQueue.filter { $0.status == .completed }.count
+            let failedCount = batchQueue.filter { $0.status == .failed }.count
+            return "Ready: \(batchQueue.count) videos in queue (\(completedCount) completed, \(failedCount) failed)"
+        } else {
+            return "No videos in batch queue"
+        }
+    }
 }
 
 // MARK: - Supporting Types
@@ -938,6 +1113,15 @@ enum ExportQuality: String, CaseIterable, Codable {
         case .medium: return "Medium (Balanced, 1080p max)"
         case .high: return "High (Original resolution, recommended)"
         case .maximum: return "Max (Original data preserved, largest files)"
+        }
+    }
+    
+    func toLUTProcessorQuality() -> LUTProcessor.OutputQuality {
+        switch self {
+        case .low: return .low
+        case .medium: return .medium
+        case .high: return .high
+        case .maximum: return .maximum
         }
     }
 }

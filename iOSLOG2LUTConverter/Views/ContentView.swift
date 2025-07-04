@@ -35,52 +35,90 @@ struct ContentView: View {
     @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Background gradient with Apple-like aesthetics
-                backgroundGradient
+        NavigationView {
+            GeometryReader { geometry in
+                ZStack {
+                    // Background gradient with Apple-like aesthetics
+                    backgroundGradient
+                    
+                    if horizontalSizeClass == .regular {
+                        // iPad Interface - Side-by-side layout
+                        iPadInterface(geometry: geometry)
+                    } else {
+                        // iPhone Interface - Vertical layout
+                        iPhoneInterface(geometry: geometry)
+                    }
+                }
                 
-                if horizontalSizeClass == .regular {
-                    // iPad Interface - Side-by-side layout
-                    iPadInterface(geometry: geometry)
-                } else {
-                    // iPhone Interface - Vertical layout
-                    iPhoneInterface(geometry: geometry)
+                // Debug Panel Overlay
+                if showingDebugPanel {
+                    DebugControlPanel(
+                        projectState: projectState,
+                        lutManager: lutManager,
+                        fileImportManager: fileImportManager
+                    )
+                    .frame(width: min(400, geometry.size.width * 0.9))
+                    .frame(height: min(600, geometry.size.height * 0.8))
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(100)
+                    .offset(x: horizontalSizeClass == .regular ? geometry.size.width * 0.3 : 0)
                 }
             }
-            
-            // Debug Panel Overlay
-            if showingDebugPanel {
-                DebugControlPanel(
-                    projectState: projectState,
-                    lutManager: lutManager,
-                    fileImportManager: fileImportManager
-                )
-                .frame(width: min(400, geometry.size.width * 0.9))
-                .frame(height: min(600, geometry.size.height * 0.8))
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-                .zIndex(100)
-                .offset(x: horizontalSizeClass == .regular ? geometry.size.width * 0.3 : 0)
-            }
+            .navigationBarHidden(true)
         }
+        .navigationViewStyle(StackNavigationViewStyle())
         // Handle photo picker selection
         .onChange(of: selectedVideoItems) { _, newItems in
-            guard let item = newItems.first else { return }
+            guard !newItems.isEmpty else { return }
             
-            item.loadTransferable(type: Movie.self) { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let movie?):
-                        let url = movie.url
-                        self.videoURLs = [url]
-                        self.videoCount = 1
-                        // CRITICAL: Update ProjectState with the imported video
-                        self.projectState.addVideoURL(url)
-                        print("✅ Video imported successfully: \(url.lastPathComponent)")
-                    case .failure(let error):
-                        print("❌ Failed to import video: \(error)")
-                    case .success(.none):
-                        print("❌ No video data found")
+            if projectState.batchMode {
+                // Handle multiple video selection for batch processing
+                var loadedVideos: [URL] = []
+                let group = DispatchGroup()
+                
+                for item in newItems {
+                    group.enter()
+                    item.loadTransferable(type: Movie.self) { result in
+                        defer { group.leave() }
+                        
+                        switch result {
+                        case .success(let movie?):
+                            loadedVideos.append(movie.url)
+                            print("✅ Video imported for batch: \(movie.url.lastPathComponent)")
+                        case .failure(let error):
+                            print("❌ Failed to import video for batch: \(error)")
+                        case .success(.none):
+                            print("❌ No video data found")
+                        }
+                    }
+                }
+                
+                group.notify(queue: .main) {
+                    // Add all videos to batch queue
+                    self.projectState.addVideosToBatch(loadedVideos)
+                    self.videoURLs = loadedVideos
+                    self.videoCount = loadedVideos.count
+                    print("📦 Added \(loadedVideos.count) videos to batch queue")
+                }
+            } else {
+                // Handle single video selection
+                guard let item = newItems.first else { return }
+                
+                item.loadTransferable(type: Movie.self) { result in
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .success(let movie?):
+                            let url = movie.url
+                            self.videoURLs = [url]
+                            self.videoCount = 1
+                            // CRITICAL: Update ProjectState with the imported video
+                            self.projectState.addVideoURL(url)
+                            print("✅ Video imported successfully: \(url.lastPathComponent)")
+                        case .failure(let error):
+                            print("❌ Failed to import video: \(error)")
+                        case .success(.none):
+                            print("❌ No video data found")
+                        }
                     }
                 }
             }
@@ -253,22 +291,26 @@ struct ContentView: View {
                 // Video Import Button - Single video only using PhotosPicker
                 PhotosPicker(
                     selection: $selectedVideoItems,
-                    maxSelectionCount: 1,
+                    maxSelectionCount: projectState.batchMode ? 10 : 1,
                     matching: .videos
                 ) {
                     HStack {
                         VStack(spacing: 8) {
-                            Image(systemName: "video.fill")
+                            Image(systemName: projectState.batchMode ? "square.stack.3d.up.fill" : "video.fill")
                                 .font(.title2)
                                 .foregroundStyle(videoCount > 0 ? .white : .blue)
                             
                             VStack(spacing: 4) {
-                                Text("Import Video")
+                                Text(projectState.batchMode ? "Import Videos" : "Import Video")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                     .foregroundStyle(videoCount > 0 ? .white : .primary)
                                 
-                                Text(videoCount == 0 ? "No video selected" : "Video selected: \(videoURLs.first?.lastPathComponent ?? "")")
+                                Text(videoCount == 0 ? 
+                                     (projectState.batchMode ? "No videos selected" : "No video selected") : 
+                                     (projectState.batchMode ? 
+                                      "Videos selected: \(videoCount)" : 
+                                      "Video selected: \(videoURLs.first?.lastPathComponent ?? "")"))
                                     .font(.caption)
                                     .foregroundStyle(videoCount > 0 ? .white.opacity(0.8) : .secondary)
                                     .multilineTextAlignment(.center)
@@ -524,9 +566,64 @@ struct ContentView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            // Processing Mode Toggle
+            // Batch Processing Toggle
             VStack(alignment: .leading) {
                 Text("Processing Mode")
+                    .font(.subheadline)
+                
+                Picker("Processing Mode", selection: $projectState.batchMode) {
+                    Text("Single Video").tag(false)
+                    Text("Batch Processing").tag(true)
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .onChange(of: projectState.batchMode) { _, newValue in
+                    print("📦 Processing Mode Changed: \(newValue ? "Batch" : "Single") Processing")
+                }
+            }
+            .padding(16)
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            
+            // Batch Processing Button (shown when batch mode is enabled)
+            if projectState.batchMode {
+                NavigationLink(destination: BatchProcessingView(projectState: projectState)) {
+                    HStack {
+                        Image(systemName: "square.stack.3d.up")
+                            .font(.title3)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Batch Processing")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                            
+                            Text("\(projectState.batchQueue.count) videos in queue")
+                                .font(.caption)
+                                .opacity(0.8)
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .opacity(0.6)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(16)
+                    .background(
+                        Color.purple.gradient,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+            
+            // GPU Processing Toggle
+            VStack(alignment: .leading) {
+                Text("Hardware Acceleration")
                     .font(.subheadline)
                 
                 Picker("Processing Mode", selection: $projectState.useGPU) {
@@ -535,7 +632,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .onChange(of: projectState.useGPU) { _, newValue in
-                    print("⚙️ Processing Mode Changed: \(newValue ? "GPU" : "CPU") Processing")
+                    print("⚙️ Hardware Acceleration Changed: \(newValue ? "GPU" : "CPU") Processing")
                     print("🔧 GPU Acceleration: \(newValue ? "ENABLED" : "DISABLED")")
                 }
             }

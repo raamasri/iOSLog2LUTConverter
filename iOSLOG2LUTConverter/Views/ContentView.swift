@@ -112,11 +112,11 @@ struct ContentView: View {
                 }
                 
                 group.notify(queue: .main) {
-                    // Add all videos to batch queue
+                    // Add all videos to batch queue with duplicate prevention
                     self.projectState.addVideosToBatch(loadedVideos)
-                    self.videoURLs = loadedVideos
-                    self.videoCount = loadedVideos.count
-                    print("📦 Added \(loadedVideos.count) videos to batch queue")
+                    self.videoURLs = Array(Set(self.videoURLs + loadedVideos)) // Prevent duplicates in local array
+                    self.videoCount = self.projectState.batchQueue.count // Use batch queue count
+                    print("📦 Added \(loadedVideos.count) videos to batch queue. Total: \(self.projectState.batchQueue.count)")
                 }
             } else {
                 // Handle single video selection
@@ -374,21 +374,21 @@ struct ContentView: View {
                         VStack(spacing: 8) {
                             Image(systemName: projectState.batchMode ? "square.stack.3d.up.fill" : "video.fill")
                                 .font(.title2)
-                                .foregroundStyle(videoCount > 0 ? .white : .blue)
+                                .foregroundStyle((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) ? .white : .blue)
                             
                             VStack(spacing: 4) {
                                 Text(projectState.batchMode ? "Import Videos" : "Import Video")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
-                                    .foregroundStyle(videoCount > 0 ? .white : .primary)
+                                    .foregroundStyle((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) ? .white : .primary)
                                 
-                                Text(videoCount == 0 ? 
+                                Text((projectState.batchMode ? projectState.batchQueue.isEmpty : videoCount == 0) ? 
                                      (projectState.batchMode ? "No videos selected" : "No video selected") : 
                                      (projectState.batchMode ? 
-                                      "Videos selected: \(videoCount)" : 
+                                      "Videos selected: \(projectState.batchQueue.count)" : 
                                       "Video selected: \(videoURLs.first?.lastPathComponent ?? "")"))
                                     .font(.caption)
-                                    .foregroundStyle(videoCount > 0 ? .white.opacity(0.8) : .secondary)
+                                    .foregroundStyle((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) ? .white.opacity(0.8) : .secondary)
                                     .multilineTextAlignment(.center)
                             }
                         }
@@ -396,10 +396,10 @@ struct ContentView: View {
                         .padding()
                         .background(
                             RoundedRectangle(cornerRadius: 16)
-                                .fill(videoCount > 0 ? AnyShapeStyle(Color.blue.gradient) : AnyShapeStyle(Color.gray.opacity(0.2)))
+                                .fill((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) ? AnyShapeStyle(Color.blue.gradient) : AnyShapeStyle(Color.gray.opacity(0.2)))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 16)
-                                        .stroke(videoCount > 0 ? .clear : .blue.opacity(0.3), lineWidth: 1)
+                                        .stroke((projectState.batchMode ? !projectState.batchQueue.isEmpty : videoCount > 0) ? .clear : .blue.opacity(0.3), lineWidth: 1)
                                 )
                         )
                     }

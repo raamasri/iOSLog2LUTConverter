@@ -1122,6 +1122,13 @@ class ProjectState: ObservableObject {
     
     func addVideoToBatch(_ url: URL) {
         let videoName = url.lastPathComponent
+        
+        // Check for duplicates based on URL path
+        if batchQueue.contains(where: { $0.url.path == url.path }) {
+            print("⚠️ Duplicate video not added to batch: \(videoName) already exists")
+            return
+        }
+        
         let batchItem = BatchVideoItem(url: url, name: videoName)
         batchQueue.append(batchItem)
         print("📦 Added video to batch: \(videoName)")
@@ -1133,10 +1140,31 @@ class ProjectState: ObservableObject {
     }
     
     func addVideosToBatch(_ urls: [URL]) {
+        var addedCount = 0
+        var duplicateCount = 0
+        
         for url in urls {
-            addVideoToBatch(url)
+            let videoName = url.lastPathComponent
+            
+            // Check for duplicates based on URL path
+            if batchQueue.contains(where: { $0.url.path == url.path }) {
+                duplicateCount += 1
+                print("⚠️ Duplicate video not added to batch: \(videoName) already exists")
+                continue
+            }
+            
+            let batchItem = BatchVideoItem(url: url, name: videoName)
+            batchQueue.append(batchItem)
+            addedCount += 1
+            print("📦 Added video to batch: \(videoName)")
         }
-        print("📦 Added \(urls.count) videos to batch queue")
+        
+        print("📦 Batch update: \(addedCount) videos added, \(duplicateCount) duplicates ignored. Total: \(batchQueue.count)")
+        
+        // If this was the first batch and we added videos, select the first one for preview
+        if batchQueue.count == addedCount && addedCount > 0 {
+            selectBatchVideoForPreview(index: 0)
+        }
     }
     
     func selectBatchVideoForPreview(index: Int) {

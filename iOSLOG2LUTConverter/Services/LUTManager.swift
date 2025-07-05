@@ -85,6 +85,17 @@ class LUTManager: ObservableObject {
         selectedSecondaryLUT != nil
     }
     
+    // MARK: - LUT Selection Methods for Project Management
+    func selectPrimaryLUT(_ lut: LUT) {
+        selectedPrimaryLUT = lut
+        print("✅ Selected primary LUT: \(lut.displayName)")
+    }
+    
+    func selectSecondaryLUT(_ lut: LUT) {
+        selectedSecondaryLUT = lut
+        print("✅ Selected secondary LUT: \(lut.displayName)")
+    }
+    
     // MARK: - Initialization
     init() {
         loadBuiltInLUTs()

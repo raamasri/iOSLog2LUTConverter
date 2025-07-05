@@ -154,7 +154,6 @@ class ProjectState: ObservableObject {
     
     // MARK: - Recent Projects (iOS Enhancement)
     @Published var recentProjects: [RecentProject] = []
-    @Published var favoriteProjects: [FavoriteProject] = []
     
     // MARK: - Debug/Test Mode
     @Published var isDebugMode = false
@@ -270,6 +269,18 @@ class ProjectState: ObservableObject {
     
     func autoSelectLUTsIfAvailable() {
         // This method will be called from ContentView after LUTManager is loaded
+    }
+    
+    // MARK: - Project Management Support Methods
+    // Note: setPrimaryLUT and setSecondaryLUT methods are defined later in the file with enhanced logging
+    
+    func resetToDefaults() {
+        primaryLUTOpacity = 1.0
+        secondLUTOpacity = 1.0
+        whiteBalanceValue = 0.0
+        exportQuality = .high
+        shouldOptimizeForBattery = true
+        log("Project settings reset to defaults", level: .info, category: .system)
     }
     
     // MARK: - Computed Properties
@@ -837,14 +848,7 @@ class ProjectState: ObservableObject {
         }
     }
     
-    func resetToDefaults() {
-        primaryLUTOpacity = 1.0
-        secondLUTOpacity = 1.0
-        whiteBalanceValue = 0.0
-        exportQuality = .high
-        shouldOptimizeForBattery = true
-        updateStatus("Reset to defaults")
-    }
+    // resetToDefaults() method is already defined earlier in the file
     
     // MARK: - Helper Methods
     private func createPlaceholderImage() -> UIImage {
@@ -1318,30 +1322,9 @@ struct RecentProject: Identifiable, Codable {
     }
 }
 
-struct FavoriteProject: Identifiable, Codable {
-    let id: UUID
-    let name: String
-    let videoURLs: [URL]
-    let primaryLUTURL: URL
-    let secondaryLUTURL: URL?
-    let settings: ProjectSettings
-    
-    init(name: String, videoURLs: [URL], primaryLUTURL: URL, secondaryLUTURL: URL? = nil, settings: ProjectSettings) {
-        self.id = UUID()
-        self.name = name
-        self.videoURLs = videoURLs
-        self.primaryLUTURL = primaryLUTURL
-        self.secondaryLUTURL = secondaryLUTURL
-        self.settings = settings
-    }
-}
+// FavoriteProject is now defined in ProjectManager.swift to avoid duplication
 
-struct ProjectSettings: Codable {
-    let opacity: Float
-    let whiteBalance: Float
-    let useGPU: Bool
-    let quality: ExportQuality
-}
+// ProjectSettings is now defined in ProjectManager.swift to avoid duplication
 
 // MARK: - Extensions  
 // Note: LUTProcessor.OutputQuality extension will be added when LUTProcessor is imported 

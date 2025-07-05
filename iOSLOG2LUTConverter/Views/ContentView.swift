@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var videoURLs: [URL] = []
     @State private var selectedVideoItems: [PhotosPickerItem] = []
     @State private var showingDebugPanel = false
+    @State private var showingProjectManagement = false
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.colorScheme) var colorScheme
     
@@ -67,6 +68,12 @@ struct ContentView: View {
             .navigationBarHidden(true)
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .sheet(isPresented: $showingProjectManagement) {
+            ProjectManagementView(
+                projectState: projectState,
+                lutManager: lutManager
+            )
+        }
         // Handle photo picker selection
         .onChange(of: selectedVideoItems) { _, newItems in
             guard !newItems.isEmpty else { return }
@@ -264,6 +271,16 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 
                 Spacer()
+                
+                // Project Management Button
+                Button {
+                    showingProjectManagement = true
+                } label: {
+                    Image(systemName: "folder.badge.gearshape")
+                        .font(.title2)
+                        .foregroundStyle(.blue.gradient)
+                        .symbolEffect(.bounce, value: showingProjectManagement)
+                }
                 
                 // Debug Button
                 if projectState.isDebugMode {

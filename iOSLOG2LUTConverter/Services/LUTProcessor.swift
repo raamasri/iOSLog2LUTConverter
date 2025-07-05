@@ -285,6 +285,103 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
         // Linear interpolation
         return lowerValue + fraction * (upperValue - lowerValue)
     }
+    
+    // MARK: - 3D LUT Downsampling
+    private func downsample3DLUT(_ lutData: [Float], fromSize: Int, toSize: Int) -> [Float] {
+        print("🔄 Downsampling 3D LUT from \(fromSize)³ to \(toSize)³...")
+        
+        var downsampledData: [Float] = []
+        downsampledData.reserveCapacity(toSize * toSize * toSize * 3)
+        
+        let scale = Float(fromSize - 1) / Float(toSize - 1)
+        
+        // For each position in the target LUT
+        for b in 0..<toSize {
+            for g in 0..<toSize {
+                for r in 0..<toSize {
+                    // Calculate the corresponding position in the source LUT
+                    let srcR = Float(r) * scale
+                    let srcG = Float(g) * scale
+                    let srcB = Float(b) * scale
+                    
+                    // Use trilinear interpolation to get the RGB values
+                    let interpolatedRGB = trilinearInterpolate(
+                        lutData: lutData,
+                        size: fromSize,
+                        r: srcR,
+                        g: srcG,
+                        b: srcB
+                    )
+                    
+                    downsampledData.append(interpolatedRGB.r)
+                    downsampledData.append(interpolatedRGB.g)
+                    downsampledData.append(interpolatedRGB.b)
+                }
+            }
+        }
+        
+        print("✅ Downsampling complete: \(downsampledData.count) values generated")
+        return downsampledData
+    }
+    
+    private func trilinearInterpolate(lutData: [Float], size: Int, r: Float, g: Float, b: Float) -> (r: Float, g: Float, b: Float) {
+        // Get the 8 corner points for trilinear interpolation
+        let r0 = Int(floor(r))
+        let r1 = min(r0 + 1, size - 1)
+        let g0 = Int(floor(g))
+        let g1 = min(g0 + 1, size - 1)
+        let b0 = Int(floor(b))
+        let b1 = min(b0 + 1, size - 1)
+        
+        // Get interpolation weights
+        let rWeight = r - Float(r0)
+        let gWeight = g - Float(g0)
+        let bWeight = b - Float(b0)
+        
+        // Get the 8 corner values
+        let c000 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b0)
+        let c001 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b1)
+        let c010 = getLUTValue(lutData: lutData, size: size, r: r0, g: g1, b: b0)
+        let c011 = getLUTValue(lutData: lutData, size: size, r: r0, g: g1, b: b1)
+        let c100 = getLUTValue(lutData: lutData, size: size, r: r1, g: g0, b: b0)
+        let c101 = getLUTValue(lutData: lutData, size: size, r: r1, g: g0, b: b1)
+        let c110 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b0)
+        let c111 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b1)
+        
+        // Perform trilinear interpolation
+        let c00 = lerp(c000, c100, rWeight)
+        let c01 = lerp(c001, c101, rWeight)
+        let c10 = lerp(c010, c110, rWeight)
+        let c11 = lerp(c011, c111, rWeight)
+        
+        let c0 = lerp(c00, c10, gWeight)
+        let c1 = lerp(c01, c11, gWeight)
+        
+        return lerp(c0, c1, bWeight)
+    }
+    
+    private func getLUTValue(lutData: [Float], size: Int, r: Int, g: Int, b: Int) -> (r: Float, g: Float, b: Float) {
+        let index = (b * size * size + g * size + r) * 3
+        
+        guard index + 2 < lutData.count else {
+            // Return safe default if index is out of bounds
+            return (r: 0.0, g: 0.0, b: 0.0)
+        }
+        
+        return (
+            r: lutData[index],
+            g: lutData[index + 1],
+            b: lutData[index + 2]
+        )
+    }
+    
+    private func lerp(_ a: (r: Float, g: Float, b: Float), _ b: (r: Float, g: Float, b: Float), _ t: Float) -> (r: Float, g: Float, b: Float) {
+        return (
+            r: a.r + t * (b.r - a.r),
+            g: a.g + t * (b.g - a.g),
+            b: a.b + t * (b.b - a.b)
+        )
+    }
 }
 
 // MARK: - LUT Processor for iOS (Replaces FFmpeg)
@@ -686,6 +783,18 @@ class LUTProcessor: ObservableObject {
             }
         }
         
+        // Validate and warn about large 3D LUTs
+        if !is1D && cubeSize > 33 {
+            print("⚠️ Large 3D LUT detected: \(cubeSize)x\(cubeSize)x\(cubeSize) (\(cubeSize * cubeSize * cubeSize * 3) values)")
+            print("   - This may cause memory/performance issues")
+            print("   - Consider using a smaller LUT (32x32x32 or 33x33x33)")
+            
+            // Extremely large LUTs (>50) will be downsampled for compatibility
+            if cubeSize > 50 {
+                print("🔧 Auto-downsampling large LUT from \(cubeSize)³ to 32³ for Core Image compatibility")
+            }
+        }
+        
         // Second pass: parse data
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -715,6 +824,21 @@ class LUTProcessor: ObservableObject {
             print("🔍 LUT Parsing: 3D LUT detected - Size: \(cubeSize), Expected: \(expectedSize), Actual: \(cubeData.count)")
             guard cubeData.count == expectedSize else {
                 throw LUTProcessingError.invalidLUTFile("Invalid 3D LUT data size - Expected: \(expectedSize), Got: \(cubeData.count)")
+            }
+            
+            // Check for problematic data (too many zeros)
+            let zeroCount = cubeData.filter { $0 == 0.0 }.count
+            let zeroPercentage = Double(zeroCount) / Double(cubeData.count) * 100
+            if zeroPercentage > 50 {
+                print("⚠️ LUT data quality warning: \(String(format: "%.1f", zeroPercentage))% zero values detected")
+                print("   - This may indicate corrupted or incomplete LUT data")
+            }
+            
+            // Downsample large LUTs to improve compatibility
+            if cubeSize > 50 {
+                cubeData = downsample3DLUT(cubeData, fromSize: cubeSize, toSize: 32)
+                cubeSize = 32
+                print("✅ Downsampled LUT to 32x32x32 for better performance")
             }
         }
         
@@ -797,6 +921,103 @@ class LUTProcessor: ObservableObject {
         
         // Linear interpolation
         return lowerValue + fraction * (upperValue - lowerValue)
+    }
+    
+    // MARK: - 3D LUT Downsampling
+    private func downsample3DLUT(_ lutData: [Float], fromSize: Int, toSize: Int) -> [Float] {
+        print("🔄 Downsampling 3D LUT from \(fromSize)³ to \(toSize)³...")
+        
+        var downsampledData: [Float] = []
+        downsampledData.reserveCapacity(toSize * toSize * toSize * 3)
+        
+        let scale = Float(fromSize - 1) / Float(toSize - 1)
+        
+        // For each position in the target LUT
+        for b in 0..<toSize {
+            for g in 0..<toSize {
+                for r in 0..<toSize {
+                    // Calculate the corresponding position in the source LUT
+                    let srcR = Float(r) * scale
+                    let srcG = Float(g) * scale
+                    let srcB = Float(b) * scale
+                    
+                    // Use trilinear interpolation to get the RGB values
+                    let interpolatedRGB = trilinearInterpolate(
+                        lutData: lutData,
+                        size: fromSize,
+                        r: srcR,
+                        g: srcG,
+                        b: srcB
+                    )
+                    
+                    downsampledData.append(interpolatedRGB.r)
+                    downsampledData.append(interpolatedRGB.g)
+                    downsampledData.append(interpolatedRGB.b)
+                }
+            }
+        }
+        
+        print("✅ Downsampling complete: \(downsampledData.count) values generated")
+        return downsampledData
+    }
+    
+    private func trilinearInterpolate(lutData: [Float], size: Int, r: Float, g: Float, b: Float) -> (r: Float, g: Float, b: Float) {
+        // Get the 8 corner points for trilinear interpolation
+        let r0 = Int(floor(r))
+        let r1 = min(r0 + 1, size - 1)
+        let g0 = Int(floor(g))
+        let g1 = min(g0 + 1, size - 1)
+        let b0 = Int(floor(b))
+        let b1 = min(b0 + 1, size - 1)
+        
+        // Get interpolation weights
+        let rWeight = r - Float(r0)
+        let gWeight = g - Float(g0)
+        let bWeight = b - Float(b0)
+        
+        // Get the 8 corner values
+        let c000 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b0)
+        let c001 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b1)
+        let c010 = getLUTValue(lutData: lutData, size: size, r: r0, g: g1, b: b0)
+        let c011 = getLUTValue(lutData: lutData, size: size, r: r0, g: g1, b: b1)
+        let c100 = getLUTValue(lutData: lutData, size: size, r: r1, g: g0, b: b0)
+        let c101 = getLUTValue(lutData: lutData, size: size, r: r1, g: g0, b: b1)
+        let c110 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b0)
+        let c111 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b1)
+        
+        // Perform trilinear interpolation
+        let c00 = lerp(c000, c100, rWeight)
+        let c01 = lerp(c001, c101, rWeight)
+        let c10 = lerp(c010, c110, rWeight)
+        let c11 = lerp(c011, c111, rWeight)
+        
+        let c0 = lerp(c00, c10, gWeight)
+        let c1 = lerp(c01, c11, gWeight)
+        
+        return lerp(c0, c1, bWeight)
+    }
+    
+    private func getLUTValue(lutData: [Float], size: Int, r: Int, g: Int, b: Int) -> (r: Float, g: Float, b: Float) {
+        let index = (b * size * size + g * size + r) * 3
+        
+        guard index + 2 < lutData.count else {
+            // Return safe default if index is out of bounds
+            return (r: 0.0, g: 0.0, b: 0.0)
+        }
+        
+        return (
+            r: lutData[index],
+            g: lutData[index + 1],
+            b: lutData[index + 2]
+        )
+    }
+    
+    private func lerp(_ a: (r: Float, g: Float, b: Float), _ b: (r: Float, g: Float, b: Float), _ t: Float) -> (r: Float, g: Float, b: Float) {
+        return (
+            r: a.r + t * (b.r - a.r),
+            g: a.g + t * (b.g - a.g),
+            b: a.b + t * (b.b - a.b)
+        )
     }
     
     // MARK: - Image Processing
@@ -984,8 +1205,6 @@ class LUTProcessor: ObservableObject {
                     processedImage = primaryOutput
                     print("   - ✅ Primary LUT applied successfully (direct)")
                 }
-            } else {
-                print("   - ❌ Primary LUT failed to generate output")
             }
         }
         
@@ -1039,8 +1258,6 @@ class LUTProcessor: ObservableObject {
                         print("   - ❌ Could not create blend filter for secondary LUT, using primary only")
                     }
                 }
-            } else {
-                print("   - ❌ Secondary LUT failed to generate output")
             }
         }
         

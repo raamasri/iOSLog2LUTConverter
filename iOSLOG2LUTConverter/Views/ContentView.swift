@@ -12,12 +12,23 @@ struct Movie: Transferable {
         FileRepresentation(contentType: .movie) { movie in
             SentTransferredFile(movie.url)
         } importing: { received in
-            let copy = URL.documentsDirectory.appending(path: "movie.mov")
-            if FileManager.default.fileExists(atPath: copy.path()) {
-                try FileManager.default.removeItem(at: copy)
+            // Preserve original filename instead of hardcoding "movie.mov"
+            let originalFilename = received.file.lastPathComponent
+            let copy = URL.documentsDirectory.appending(path: originalFilename)
+            
+            // If file already exists, add a unique identifier
+            var finalURL = copy
+            var counter = 1
+            while FileManager.default.fileExists(atPath: finalURL.path()) {
+                let nameWithoutExtension = URL(fileURLWithPath: originalFilename).deletingPathExtension().lastPathComponent
+                let fileExtension = URL(fileURLWithPath: originalFilename).pathExtension
+                let uniqueName = "\(nameWithoutExtension)_\(counter).\(fileExtension)"
+                finalURL = URL.documentsDirectory.appending(path: uniqueName)
+                counter += 1
             }
-            try FileManager.default.copyItem(at: received.file, to: copy)
-            return Self.init(url: copy)
+            
+            try FileManager.default.copyItem(at: received.file, to: finalURL)
+            return Self.init(url: finalURL)
         }
     }
 }
@@ -714,6 +725,30 @@ struct ContentView: View {
                 .transition(.scale.combined(with: .opacity))
             }
             
+            // Save to Photos Button for Batch Processing (shown after batch processing is complete)
+            if projectState.batchMode && !projectState.isBatchProcessing && !projectState.batchExportedVideoURLs.isEmpty {
+                Button(action: saveBatchToPhotos) {
+                    HStack {
+                        Image(systemName: isSavedToPhotos ? "checkmark.circle.fill" : "photo.badge.plus")
+                            .font(.title3)
+                        
+                        Text(isSavedToPhotos ? "Batch Saved to Photos!" : "Save Batch to Photos")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(16)
+                    .background(
+                        isSavedToPhotos ? Color.blue.gradient : Color.green.gradient,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(isSavedToPhotos)
+                .transition(.scale.combined(with: .opacity))
+            }
+            
             // Reset Button (shown after conversion)
             if isConversionComplete {
                 Button(action: resetConversion) {
@@ -742,153 +777,12 @@ struct ContentView: View {
     // MARK: - Batch Queue Section
     private var batchQueueSection: some View {
         VStack(spacing: 12) {
-            HStack {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.title3)
-                    .foregroundStyle(.purple)
-                
-                Text("Batch Queue")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                
-                Spacer()
-                
-                Text("\(projectState.batchQueue.count) videos")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            batchQueueHeader
             
             if projectState.batchQueue.isEmpty {
-                // Empty state
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                    
-                    Text("No videos in batch queue")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    Text("Add videos to start batch processing")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 80)
-                .background(
-                    .regularMaterial,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
+                batchQueueEmptyState
             } else {
-                // Queue list
-                VStack(spacing: 6) {
-                    ForEach(Array(projectState.batchQueue.enumerated()), id: \.offset) { index, item in
-                        HStack(spacing: 12) {
-                            // Status indicator
-                            Circle()
-                                .fill(batchItemStatusColor(for: item.status))
-                                .frame(width: 8, height: 8)
-                            
-                            // Video info
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.name)
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .lineLimit(1)
-                                
-                                Text(batchItemStatusText(for: item.status))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            // Progress indicator
-                            if item.status == .processing {
-                                ProgressView(value: item.progress)
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                                    .scaleEffect(0.7)
-                                    .frame(width: 20, height: 20)
-                            } else if item.status == .completed {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.green)
-                            } else if item.status == .failed {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
-                            
-                            // Remove button (only for pending items)
-                            if item.status == .pending && !projectState.isBatchProcessing {
-                                Button(action: {
-                                    projectState.removeVideoFromBatch(at: index)
-                                }) {
-                                    Image(systemName: "minus.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            .ultraThinMaterial,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
-                    }
-                }
-                .frame(maxHeight: 200)
-                
-                // Batch controls
-                HStack(spacing: 8) {
-                    Button(action: {
-                        // Add more videos to batch
-                        selectedVideoItems = []
-                        // This will trigger the PhotosPicker
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.caption)
-                            Text("Add More")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            .regularMaterial,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(projectState.isBatchProcessing)
-                    
-                    Spacer()
-                    
-                    Button(action: {
-                        projectState.clearBatchQueue()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash.circle.fill")
-                                .font(.caption)
-                            Text("Clear All")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            .regularMaterial,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
-                }
+                batchQueueContent
             }
         }
         .padding(16)
@@ -897,6 +791,196 @@ struct ContentView: View {
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .transition(.scale.combined(with: .opacity))
+    }
+    
+    private var batchQueueHeader: some View {
+        HStack {
+            Image(systemName: "square.stack.3d.up")
+                .font(.title3)
+                .foregroundStyle(.purple)
+            
+            Text("Batch Queue")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            
+            Spacer()
+            
+            Text("\(projectState.batchQueue.count) videos")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+    
+    private var batchQueueEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "tray")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            
+            Text("No videos in batch queue")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            Text("Add videos to start batch processing")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 80)
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+    }
+    
+    private var batchQueueContent: some View {
+        VStack(spacing: 6) {
+            batchQueueList
+            batchQueueControls
+        }
+    }
+    
+    private var batchQueueList: some View {
+        VStack(spacing: 6) {
+            ForEach(Array(projectState.batchQueue.enumerated()), id: \.offset) { index, item in
+                batchQueueItem(index: index, item: item)
+            }
+        }
+        .frame(maxHeight: 200)
+    }
+    
+    private func batchQueueItem(index: Int, item: ProjectState.BatchVideoItem) -> some View {
+        HStack(spacing: 12) {
+            // Status indicator
+            Circle()
+                .fill(batchItemStatusColor(for: item.status))
+                .frame(width: 8, height: 8)
+            
+            // Video info - Make it tappable for preview selection
+            Button(action: {
+                projectState.selectBatchVideoForPreview(index: index)
+            }) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name)
+                        .font(.caption)
+                        .fontWeight(index == projectState.selectedBatchVideoIndex ? .bold : .medium)
+                        .lineLimit(1)
+                        .foregroundStyle(index == projectState.selectedBatchVideoIndex ? .blue : .primary)
+                    
+                    Text(batchItemStatusText(for: item.status))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            
+            Spacer()
+            
+            // Preview indicator for selected video
+            if index == projectState.selectedBatchVideoIndex {
+                Image(systemName: "eye.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.blue)
+            }
+            
+            // Progress indicator
+            batchItemProgressIndicator(item: item)
+            
+            // Remove button (only for pending items)
+            if item.status == .pending && !projectState.isBatchProcessing {
+                Button(action: {
+                    projectState.removeVideoFromBatch(at: index)
+                }) {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            index == projectState.selectedBatchVideoIndex ? 
+                Color.blue.opacity(0.1) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(
+                    index == projectState.selectedBatchVideoIndex ? 
+                        Color.blue.opacity(0.3) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+    
+    @ViewBuilder
+    private func batchItemProgressIndicator(item: ProjectState.BatchVideoItem) -> some View {
+        if item.status == .processing {
+            ProgressView(value: item.progress)
+                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                .scaleEffect(0.7)
+                .frame(width: 20, height: 20)
+        } else if item.status == .completed {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else if item.status == .failed {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+    
+    private var batchQueueControls: some View {
+        HStack(spacing: 8) {
+            Button(action: {
+                // Add more videos to batch
+                selectedVideoItems = []
+                // This will trigger the PhotosPicker
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.caption)
+                    Text("Add More")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(projectState.isBatchProcessing)
+            
+            Spacer()
+            
+            Button(action: {
+                projectState.clearBatchQueue()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "trash.circle.fill")
+                        .font(.caption)
+                    Text("Clear All")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
+        }
     }
     
     // MARK: - Status Section
@@ -1293,6 +1377,89 @@ struct ContentView: View {
         }
     }
     
+    private func saveBatchToPhotos() {
+        guard !projectState.batchExportedVideoURLs.isEmpty else { return }
+        
+        print("📱 Saving \(projectState.batchExportedVideoURLs.count) videos from batch to Photos...")
+        
+        // Check if all files exist
+        let existingVideoURLs = projectState.batchExportedVideoURLs.filter { videoURL in
+            let exists = FileManager.default.fileExists(atPath: videoURL.path)
+            if !exists {
+                print("❌ Video file does not exist at path: \(videoURL.path)")
+            }
+            return exists
+        }
+        
+        guard !existingVideoURLs.isEmpty else {
+            print("❌ No valid video files found")
+            projectState.updateStatus("No valid video files found")
+            return
+        }
+        
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            DispatchQueue.main.async {
+                switch status {
+                case .authorized, .limited:
+                    print("✅ Photos access authorized, attempting to save \(existingVideoURLs.count) videos...")
+                    
+                    var savedCount = 0
+                    var failedCount = 0
+                    let totalCount = existingVideoURLs.count
+                    
+                    let group = DispatchGroup()
+                    
+                    for videoURL in existingVideoURLs {
+                        group.enter()
+                        PHPhotoLibrary.shared().performChanges({
+                            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
+                        }) { success, error in
+                            if success {
+                                savedCount += 1
+                                print("✅ Video saved to Photos: \(videoURL.lastPathComponent)")
+                            } else {
+                                failedCount += 1
+                                print("❌ Failed to save video \(videoURL.lastPathComponent): \(error?.localizedDescription ?? "Unknown error")")
+                            }
+                            group.leave()
+                        }
+                    }
+                    
+                    group.notify(queue: .main) {
+                        if savedCount == totalCount {
+                            print("✅ All \(savedCount) videos saved to Photos successfully!")
+                            projectState.updateStatus("All \(savedCount) videos saved to Photos")
+                            self.isSavedToPhotos = true
+                            self.saveToPhotosMessage = "✅ All \(savedCount) videos successfully saved to Photos!"
+                        } else if savedCount > 0 {
+                            print("⚠️ \(savedCount) of \(totalCount) videos saved to Photos")
+                            projectState.updateStatus("\(savedCount) of \(totalCount) videos saved to Photos")
+                            self.isSavedToPhotos = true
+                            self.saveToPhotosMessage = "⚠️ \(savedCount) of \(totalCount) videos saved to Photos"
+                        } else {
+                            print("❌ Failed to save any videos to Photos")
+                            projectState.updateStatus("Failed to save videos to Photos")
+                            self.saveToPhotosMessage = "❌ Failed to save videos to Photos"
+                        }
+                    }
+                    
+                case .denied, .restricted:
+                    print("❌ Photos access denied")
+                    projectState.updateStatus("Photos access denied")
+                    self.saveToPhotosMessage = "❌ Photos access denied. Please enable in Settings."
+                case .notDetermined:
+                    print("❌ Photos access not determined")
+                    projectState.updateStatus("Photos access required")
+                    self.saveToPhotosMessage = "❌ Photos access required. Please grant permission."
+                @unknown default:
+                    print("❌ Unknown Photos authorization status")
+                    projectState.updateStatus("Photos access error")
+                    self.saveToPhotosMessage = "❌ Photos access error occurred."
+                }
+            }
+        }
+    }
+    
     private func resetConversion() {
         projectState.logVideoOperation("Resetting all app data and selections", level: .info)
         
@@ -1317,7 +1484,7 @@ struct ContentView: View {
         projectState.setSecondaryLUT(nil)
         projectState.previewImage = nil
         
-        // Clear batch queue
+        // Clear batch queue and exported URLs
         projectState.clearBatchQueue()
         
         // Reset opacity sliders

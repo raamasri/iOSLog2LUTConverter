@@ -107,6 +107,8 @@ class ProjectState: ObservableObject {
     @Published var batchProgress: Double = 0.0 // Overall batch progress (0.0 to 1.0)
     @Published var isBatchProcessing: Bool = false // True when batch processing is active
     @Published var batchProcessingStatus: String = "" // Status message for batch processing
+    @Published var selectedBatchVideoIndex: Int = 0 // Currently selected video for preview in batch mode
+    @Published var batchExportedVideoURLs: [URL] = [] // URLs of exported videos from batch processing
     
     // MARK: - Batch Processing Data Models
     struct BatchVideoItem: Identifiable, Equatable {
@@ -350,6 +352,11 @@ class ProjectState: ObservableObject {
         // Log video details using modern AVURLAsset
         let asset = AVURLAsset(url: url)
         logVideoOperation("Analyzing video properties...", level: .info)
+        
+        // Load video duration for scrubbing functionality
+        Task {
+            await loadVideoDuration(from: url)
+        }
         
         // Get video duration and format info
         Task {
@@ -1118,6 +1125,11 @@ class ProjectState: ObservableObject {
         let batchItem = BatchVideoItem(url: url, name: videoName)
         batchQueue.append(batchItem)
         print("📦 Added video to batch: \(videoName)")
+        
+        // If this is the first video, select it for preview
+        if batchQueue.count == 1 {
+            selectBatchVideoForPreview(index: 0)
+        }
     }
     
     func addVideosToBatch(_ urls: [URL]) {
@@ -1127,14 +1139,50 @@ class ProjectState: ObservableObject {
         print("📦 Added \(urls.count) videos to batch queue")
     }
     
+    func selectBatchVideoForPreview(index: Int) {
+        guard index >= 0 && index < batchQueue.count else { return }
+        
+        selectedBatchVideoIndex = index
+        let selectedVideo = batchQueue[index]
+        
+        // Update the main video URL for preview generation
+        videoURLs = [selectedVideo.url]
+        
+        // Load video duration for scrubbing
+        Task {
+            await loadVideoDuration(from: selectedVideo.url)
+        }
+        
+        // Generate preview for the selected video
+        generatePreview()
+        
+        print("📦 Selected video for preview: \(selectedVideo.name)")
+    }
+    
     func removeVideoFromBatch(at index: Int) {
         guard index < batchQueue.count else { return }
         let removedItem = batchQueue.remove(at: index)
         print("📦 Removed video from batch: \(removedItem.name)")
+        
+        // Adjust selected index if necessary
+        if selectedBatchVideoIndex >= batchQueue.count {
+            selectedBatchVideoIndex = max(0, batchQueue.count - 1)
+        }
+        
+        // If we removed the selected video and there are still videos, select another one
+        if !batchQueue.isEmpty && index == selectedBatchVideoIndex {
+            selectBatchVideoForPreview(index: selectedBatchVideoIndex)
+        } else if batchQueue.isEmpty {
+            videoURLs = []
+            videoDuration = 0.0
+            currentTime = 0.0
+        }
     }
     
     func removeVideoFromBatch(id: UUID) {
-        batchQueue.removeAll { $0.id == id }
+        if let index = batchQueue.firstIndex(where: { $0.id == id }) {
+            removeVideoFromBatch(at: index)
+        }
         print("📦 Removed video from batch by ID")
     }
     
@@ -1143,6 +1191,11 @@ class ProjectState: ObservableObject {
         currentBatchIndex = 0
         batchProgress = 0.0
         batchProcessingStatus = ""
+        selectedBatchVideoIndex = 0
+        batchExportedVideoURLs.removeAll()
+        videoURLs = []
+        videoDuration = 0.0
+        currentTime = 0.0
         print("📦 Cleared batch queue")
     }
     
@@ -1187,6 +1240,7 @@ class ProjectState: ObservableObject {
                 batchQueue[index].status = .completed
                 batchQueue[index].progress = 1.0
                 batchQueue[index].outputURL = outputURL
+                batchExportedVideoURLs.append(outputURL) // Add to the list of exported URLs
                 
                 print("✅ Completed processing: \(batchItem.name)")
                 

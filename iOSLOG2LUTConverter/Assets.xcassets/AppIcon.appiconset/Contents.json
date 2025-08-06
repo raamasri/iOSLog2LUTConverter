@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "logo Background Removed.png",
+      "filename" : "logo Background Removed 1.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -13,7 +13,7 @@
           "value" : "dark"
         }
       ],
-      "filename" : "logo Background Removed 1.png",
+      "filename" : "logo Background Removed 2.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -25,7 +25,7 @@
           "value" : "tinted"
         }
       ],
-      "filename" : "logo Background Removed 2.png",
+      "filename" : "logo Background Removed 3.jpeg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

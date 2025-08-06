@@ -288,10 +288,11 @@ struct ContentView: View {
                     showingProjectManagement = true
                 } label: {
                     Image(systemName: "folder.badge.gearshape")
-                        .font(.title2)
-                        .foregroundStyle(.blue.gradient)
-                        .symbolEffect(.bounce, value: showingProjectManagement)
                 }
+                .accessibilityLabel("Project Management")
+                .font(.title2)
+                .foregroundStyle(.blue.gradient)
+                .symbolEffect(.bounce, value: showingProjectManagement)
                 
                 // Debug Button
                 if projectState.isDebugMode {
@@ -301,10 +302,11 @@ struct ContentView: View {
                         }
                     } label: {
                         Image(systemName: showingDebugPanel ? "ant.circle.fill" : "ant.circle")
-                            .font(.title2)
-                            .foregroundStyle(.yellow.gradient)
-                            .symbolEffect(.bounce, value: showingDebugPanel)
                     }
+                    .accessibilityLabel("Debug Panel")
+                    .font(.title2)
+                    .foregroundStyle(.yellow.gradient)
+                    .symbolEffect(.bounce, value: showingDebugPanel)
                 }
             }
             

@@ -37,6 +37,7 @@ struct VideoPreviewView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: geometry.size.width, maxHeight: geometry.size.height)
+                    .accessibilityLabel(NSLocalizedString("processed_video_preview", comment: "Accessibility label for processed video preview"))
             } else if projectState.isPreviewLoading {
                 loadingView
             } else {
@@ -69,9 +70,10 @@ struct VideoPreviewView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: (geometry.size.width - 2) / 2, maxHeight: geometry.size.height - 40)
                         .clipped()
+                        .accessibilityLabel(NSLocalizedString("original_video_before_processing", comment: "Accessibility label for original video"))
                 }
                 
-                Text("BEFORE")
+                Text(NSLocalizedString("before", comment: "Label for original video"))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white.opacity(0.8))
@@ -91,9 +93,10 @@ struct VideoPreviewView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: (geometry.size.width - 2) / 2, maxHeight: geometry.size.height - 40)
                         .clipped()
+                        .accessibilityLabel(NSLocalizedString("video_after_lut_processing", comment: "Accessibility label for processed video"))
                 }
                 
-                Text("AFTER")
+                Text(NSLocalizedString("after", comment: "Label for processed video"))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white.opacity(0.8))
@@ -121,7 +124,7 @@ struct VideoPreviewView: View {
                 
                 Spacer()
                 
-                Text("BEFORE")
+                Text(NSLocalizedString("before", comment: "Label for original video"))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white.opacity(0.8))
@@ -146,7 +149,7 @@ struct VideoPreviewView: View {
                 
                 Spacer()
                 
-                Text("AFTER")
+                Text(NSLocalizedString("after", comment: "Label for processed video"))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white.opacity(0.8))

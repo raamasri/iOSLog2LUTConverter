@@ -34,6 +34,7 @@ struct LUTSelectorView: View {
                             .font(.system(size: 40))
                             .foregroundStyle(isSecondary ? Color.pink.gradient : Color.blue.gradient)
                             .symbolEffect(.pulse)
+                            .accessibilityLabel(isSecondary ? "Creative LUT selector" : "Primary LUT selector")
                         
                         Text(isSecondary ? "Choose a Creative LUT" : "Choose a LUT")
                             .font(.title2)

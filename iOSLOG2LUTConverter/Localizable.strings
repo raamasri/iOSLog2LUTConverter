@@ -1,0 +1,74 @@
+/* 
+  Localizable.strings
+  iOSLOG2LUTConverter
+
+  Created for localization support.
+*/
+
+// MARK: - App Title and Main Interface
+"app_title" = "iOS LUT Converter";
+"video_preview" = "Video Preview";
+
+// MARK: - Video Import
+"import_video" = "Import Video";
+"import_multiple_videos" = "Import Multiple Videos";
+"select_video_to_start" = "Select a video to start";
+
+// MARK: - LUT Selection
+"select_primary_lut" = "Select Primary LUT";
+"select_secondary_lut" = "Select Creative LUT";
+"choose_lut" = "Choose a LUT";
+"choose_creative_lut" = "Choose a Creative LUT";
+"no_lut_selected" = "No LUT Selected";
+"optional_lut" = "Optional";
+
+// MARK: - Processing Controls
+"primary_lut_opacity" = "Primary LUT Opacity";
+"secondary_lut_opacity" = "Creative LUT Opacity";
+"white_balance" = "White Balance";
+
+// MARK: - Export and Save
+"export_video" = "Export Video";
+"save_to_photos" = "Save to Photos";
+"save_batch_to_photos" = "Save All to Photos";
+"saved_to_photos" = "Saved to Photos";
+"exporting" = "Exporting...";
+"processing" = "Processing...";
+
+// MARK: - Batch Processing
+"batch_mode" = "Batch Mode";
+"single_mode" = "Single Mode";
+"batch_processing" = "Batch Processing";
+"add_more_videos" = "Add More Videos";
+"clear_batch" = "Clear Batch";
+
+// MARK: - Before/After Comparison
+"before" = "BEFORE";
+"after" = "AFTER";
+"show_before_after" = "Show Before/After";
+
+// MARK: - Quality Settings
+"export_quality" = "Export Quality";
+"quality_low" = "Low (720p)";
+"quality_medium" = "Medium (1080p)";
+"quality_high" = "High (Original)";
+"quality_maximum" = "Maximum (Uncompressed)";
+
+// MARK: - Reset and Clear
+"reset" = "Reset";
+"clear_log" = "Clear Log";
+
+// MARK: - Status Messages
+"video_loaded" = "Video loaded successfully";
+"lut_applied" = "LUT applied successfully";
+"export_complete" = "Export completed";
+"processing_video" = "Processing video...";
+
+// MARK: - Accessibility Labels
+"processed_video_preview" = "Processed video preview";
+"original_video_before_processing" = "Original video before processing";
+"video_after_lut_processing" = "Video after LUT processing";
+"primary_lut_selector" = "Primary LUT selector";
+"creative_lut_selector" = "Creative LUT selector";
+"project_management" = "Project Management";
+"debug_panel" = "Debug Panel";

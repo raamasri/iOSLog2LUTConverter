@@ -16,7 +16,7 @@ struct ProjectManagementView: View {
     @State private var searchText = ""
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // Header
                 headerView
@@ -43,7 +43,6 @@ struct ProjectManagementView: View {
             .navigationBarHidden(true)
             .background(Color(.systemGroupedBackground))
         }
-        .navigationViewStyle(StackNavigationViewStyle())
         .sheet(isPresented: $showingSaveDialog) {
             saveProjectDialog
         }
@@ -252,7 +251,7 @@ struct ProjectManagementView: View {
     
     // MARK: - Save Project Dialog
     private var saveProjectDialog: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project Name")
@@ -309,26 +308,30 @@ struct ProjectManagementView: View {
             .padding()
             .navigationTitle("Save Project")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(
-                leading: Button("Cancel") {
-                    showingSaveDialog = false
-                    newProjectName = ""
-                },
-                trailing: Button("Save") {
-                    Task {
-                        let success = await projectManager.saveProject(
-                            name: newProjectName,
-                            projectState: projectState,
-                            lutManager: lutManager
-                        )
-                        if success {
-                            showingSaveDialog = false
-                            newProjectName = ""
-                        }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showingSaveDialog = false
+                        newProjectName = ""
                     }
                 }
-                .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            )
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task {
+                            let success = await projectManager.saveProject(
+                                name: newProjectName,
+                                projectState: projectState,
+                                lutManager: lutManager
+                            )
+                            if success {
+                                showingSaveDialog = false
+                                newProjectName = ""
+                            }
+                        }
+                    }
+                    .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
         }
     }
     

@@ -82,11 +82,15 @@ class ProjectState: ObservableObject {
             case debug = "DEBUG"
         }
         
-        var formattedTimestamp: String {
+        private static let timestampFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.timeStyle = .medium
             formatter.dateStyle = .none
-            return formatter.string(from: timestamp)
+            return formatter
+        }()
+        
+        var formattedTimestamp: String {
+            Self.timestampFormatter.string(from: timestamp)
         }
     }
     
@@ -261,11 +265,9 @@ class ProjectState: ObservableObject {
     }
     
     private func autoSelectTestLUTs() {
-        // This will be called after LUTManager loads the LUTs
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            // Auto-select first available LUTs for testing
-            print("🧪 Debug Mode: Auto-selecting test LUTs...")
-            self.autoSelectLUTsIfAvailable()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            self?.autoSelectLUTsIfAvailable()
         }
     }
     
@@ -416,17 +418,20 @@ class ProjectState: ObservableObject {
         }
     }
     
+    private var scrubTask: Task<Void, Never>?
+    
     func scrubToTime(_ time: Double) {
         guard videoDuration > 0 else { return }
         
-        // Clamp time to valid range
         let clampedTime = max(0.0, min(time, videoDuration))
         currentTime = clampedTime
         
-        print("🎯 Scrubbing to time: \(clampedTime)s")
-        
-        // Generate preview at this specific time
-        generatePreviewAtTime(clampedTime)
+        scrubTask?.cancel()
+        scrubTask = Task {
+            try? await Task.sleep(nanoseconds: 150_000_000) // 150ms debounce
+            guard !Task.isCancelled else { return }
+            generatePreviewAtTime(clampedTime)
+        }
     }
     
     func generatePreviewAtTime(_ timeSeconds: Double) {
@@ -863,7 +868,7 @@ class ProjectState: ObservableObject {
         UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
         defer { UIGraphicsEndImageContext() }
         
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else { return UIImage() }
         
         // Dark background
         context.setFillColor(UIColor.black.cgColor)
@@ -1188,7 +1193,7 @@ class ProjectState: ObservableObject {
     }
     
     func removeVideoFromBatch(at index: Int) {
-        guard index < batchQueue.count else { return }
+        guard index >= 0, index < batchQueue.count else { return }
         let removedItem = batchQueue.remove(at: index)
         print("📦 Removed video from batch: \(removedItem.name)")
         
@@ -1318,7 +1323,10 @@ class ProjectState: ObservableObject {
             throw NSError(domain: "BatchProcessing", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to process video: \(batchItem.name)"])
         }
         
-        return videoProcessor.exportedVideoURLs.first!
+        guard let firstURL = videoProcessor.exportedVideoURLs.first else {
+            throw NSError(domain: "BatchProcessing", code: 2, userInfo: [NSLocalizedDescriptionKey: "No exported URL available for: \(batchItem.name)"])
+        }
+        return firstURL
     }
     
     var batchProcessingProgress: Double {

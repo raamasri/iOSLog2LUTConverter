@@ -43,11 +43,12 @@ struct ContentView: View {
     @State private var selectedVideoItems: [PhotosPickerItem] = []
     @State private var showingDebugPanel = false
     @State private var showingProjectManagement = false
+    @State private var previewDebounceTask: Task<Void, Never>?
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             GeometryReader { geometry in
                 ZStack {
                     // Background gradient with Apple-like aesthetics
@@ -78,7 +79,6 @@ struct ContentView: View {
             }
             .navigationBarHidden(true)
         }
-        .navigationViewStyle(StackNavigationViewStyle())
         .sheet(isPresented: $showingProjectManagement) {
             ProjectManagementView(
                 projectState: projectState,
@@ -90,33 +90,20 @@ struct ContentView: View {
             guard !newItems.isEmpty else { return }
             
             if projectState.batchMode {
-                // Handle multiple video selection for batch processing
-                var loadedVideos: [URL] = []
-                let group = DispatchGroup()
-                
-                for item in newItems {
-                    group.enter()
-                    item.loadTransferable(type: Movie.self) { result in
-                        defer { group.leave() }
-                        
-                        switch result {
-                        case .success(let movie?):
-                            loadedVideos.append(movie.url)
-                            print("✅ Video imported for batch: \(movie.url.lastPathComponent)")
-                        case .failure(let error):
+                Task {
+                    var loadedVideos: [URL] = []
+                    for item in newItems {
+                        do {
+                            if let movie = try await item.loadTransferable(type: Movie.self) {
+                                loadedVideos.append(movie.url)
+                            }
+                        } catch {
                             print("❌ Failed to import video for batch: \(error)")
-                        case .success(.none):
-                            print("❌ No video data found")
                         }
                     }
-                }
-                
-                group.notify(queue: .main) {
-                    // Add all videos to batch queue with duplicate prevention
-                    self.projectState.addVideosToBatch(loadedVideos)
-                    self.videoURLs = Array(Set(self.videoURLs + loadedVideos)) // Prevent duplicates in local array
-                    self.videoCount = self.projectState.batchQueue.count // Use batch queue count
-                    print("📦 Added \(loadedVideos.count) videos to batch queue. Total: \(self.projectState.batchQueue.count)")
+                    projectState.addVideosToBatch(loadedVideos)
+                    videoURLs = Array(Set(videoURLs + loadedVideos))
+                    videoCount = projectState.batchQueue.count
                 }
             } else {
                 // Handle single video selection
@@ -148,18 +135,29 @@ struct ContentView: View {
         .onChange(of: lutManager.selectedSecondaryLUT) { _, newLUT in
             projectState.setSecondaryLUT(newLUT?.url)
         }
-        // Update preview when opacity changes
-        .onChange(of: projectState.primaryLUTOpacity) { _, newOpacity in
-            print("🎨 Primary LUT opacity changed to \(Int(newOpacity * 100))% - Regenerating preview...")
-            projectState.generatePreview()
+        .onChange(of: projectState.primaryLUTOpacity) { _, _ in
+            previewDebounceTask?.cancel()
+            previewDebounceTask = Task {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                projectState.generatePreview()
+            }
         }
-        .onChange(of: projectState.secondLUTOpacity) { _, newOpacity in
-            print("🎭 Secondary LUT opacity changed to \(Int(newOpacity * 100))% - Regenerating preview...")
-            projectState.generatePreview()
+        .onChange(of: projectState.secondLUTOpacity) { _, _ in
+            previewDebounceTask?.cancel()
+            previewDebounceTask = Task {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                projectState.generatePreview()
+            }
         }
-        .onChange(of: projectState.whiteBalanceValue) { _, newValue in
-            print("🌡️ White balance changed to \(projectState.formattedWhiteBalance) - Regenerating preview...")
-            projectState.generatePreview()
+        .onChange(of: projectState.whiteBalanceValue) { _, _ in
+            previewDebounceTask?.cancel()
+            previewDebounceTask = Task {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                projectState.generatePreview()
+            }
         }
         // Update video URLs when test video is loaded
         .onChange(of: projectState.videoURLs) { _, newURLs in
@@ -844,7 +842,7 @@ struct ContentView: View {
     
     private var batchQueueList: some View {
         VStack(spacing: 6) {
-            ForEach(Array(projectState.batchQueue.enumerated()), id: \.offset) { index, item in
+            ForEach(Array(projectState.batchQueue.enumerated()), id: \.element.id) { index, item in
                 batchQueueItem(index: index, item: item)
             }
         }
@@ -1405,43 +1403,40 @@ struct ContentView: View {
                 case .authorized, .limited:
                     print("✅ Photos access authorized, attempting to save \(existingVideoURLs.count) videos...")
                     
-                    var savedCount = 0
-                    var failedCount = 0
                     let totalCount = existingVideoURLs.count
-                    
-                    let group = DispatchGroup()
-                    
-                    for videoURL in existingVideoURLs {
-                        group.enter()
-                        PHPhotoLibrary.shared().performChanges({
-                            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
-                        }) { success, error in
-                            if success {
+
+                    Task {
+                        var savedCount = 0
+                        var failedCount = 0
+
+                        for videoURL in existingVideoURLs {
+                            do {
+                                try await PHPhotoLibrary.shared().performChanges {
+                                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
+                                }
                                 savedCount += 1
-                                print("✅ Video saved to Photos: \(videoURL.lastPathComponent)")
-                            } else {
+                            } catch {
                                 failedCount += 1
-                                print("❌ Failed to save video \(videoURL.lastPathComponent): \(error?.localizedDescription ?? "Unknown error")")
+                                print("❌ Failed to save video \(videoURL.lastPathComponent): \(error.localizedDescription)")
                             }
-                            group.leave()
                         }
-                    }
-                    
-                    group.notify(queue: .main) {
-                        if savedCount == totalCount {
-                            print("✅ All \(savedCount) videos saved to Photos successfully!")
-                            projectState.updateStatus("All \(savedCount) videos saved to Photos")
-                            self.isSavedToPhotos = true
-                            self.saveToPhotosMessage = "✅ All \(savedCount) videos successfully saved to Photos!"
-                        } else if savedCount > 0 {
-                            print("⚠️ \(savedCount) of \(totalCount) videos saved to Photos")
-                            projectState.updateStatus("\(savedCount) of \(totalCount) videos saved to Photos")
-                            self.isSavedToPhotos = true
-                            self.saveToPhotosMessage = "⚠️ \(savedCount) of \(totalCount) videos saved to Photos"
-                        } else {
-                            print("❌ Failed to save any videos to Photos")
-                            projectState.updateStatus("Failed to save videos to Photos")
-                            self.saveToPhotosMessage = "❌ Failed to save videos to Photos"
+
+                        await MainActor.run {
+                            if savedCount == totalCount {
+                                print("✅ All \(savedCount) videos saved to Photos successfully!")
+                                projectState.updateStatus("All \(savedCount) videos saved to Photos")
+                                self.isSavedToPhotos = true
+                                self.saveToPhotosMessage = "✅ All \(savedCount) videos successfully saved to Photos!"
+                            } else if savedCount > 0 {
+                                print("⚠️ \(savedCount) of \(totalCount) videos saved to Photos")
+                                projectState.updateStatus("\(savedCount) of \(totalCount) videos saved to Photos")
+                                self.isSavedToPhotos = true
+                                self.saveToPhotosMessage = "⚠️ \(savedCount) of \(totalCount) videos saved to Photos"
+                            } else {
+                                print("❌ Failed to save any videos to Photos")
+                                projectState.updateStatus("Failed to save videos to Photos")
+                                self.saveToPhotosMessage = "❌ Failed to save videos to Photos"
+                            }
                         }
                     }
                     

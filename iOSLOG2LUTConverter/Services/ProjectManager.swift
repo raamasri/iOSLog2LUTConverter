@@ -273,91 +273,63 @@ class ProjectManager: ObservableObject {
         isLoading = true
         lastError = nil
         
-        do {
-            // Load video URLs
-            projectState.videoURLs = project.videoURLs
-            
-            // Load LUTs
-            if let primaryLUTName = project.primaryLUTName,
-               let primaryLUT = lutManager.primaryLUTs.first(where: { $0.name == primaryLUTName }) {
-                lutManager.selectedPrimaryLUT = primaryLUT
-                projectState.setPrimaryLUT(primaryLUT.url)
-            }
-            
-            if let secondaryLUTName = project.secondaryLUTName,
-               let secondaryLUT = lutManager.secondaryLUTs.first(where: { $0.name == secondaryLUTName }) {
-                lutManager.selectedSecondaryLUT = secondaryLUT
-                projectState.setSecondaryLUT(secondaryLUT.url)
-            }
-            
-            // Load settings
-            projectState.primaryLUTOpacity = project.settings.primaryLUTOpacity
-            projectState.secondLUTOpacity = project.settings.secondaryLUTOpacity
-            projectState.whiteBalanceValue = project.settings.whiteBalanceValue
-            projectState.exportQuality = project.settings.exportQuality
-            projectState.shouldOptimizeForBattery = project.settings.shouldOptimizeForBattery
-            
-            // Add to recent projects
-            addToRecentProjects(project)
-            
-            // Generate preview
-            projectState.generatePreview()
-            
-            print("✅ Project loaded successfully: \(project.name)")
-            isLoading = false
-            return true
-            
-        } catch {
-            lastError = "Failed to load project: \(error.localizedDescription)"
-            print("❌ Failed to load project: \(error)")
-            isLoading = false
-            return false
+        projectState.videoURLs = project.videoURLs
+        
+        if let primaryLUTName = project.primaryLUTName,
+           let primaryLUT = lutManager.primaryLUTs.first(where: { $0.name == primaryLUTName }) {
+            lutManager.selectedPrimaryLUT = primaryLUT
+            projectState.setPrimaryLUT(primaryLUT.url)
         }
+        
+        if let secondaryLUTName = project.secondaryLUTName,
+           let secondaryLUT = lutManager.secondaryLUTs.first(where: { $0.name == secondaryLUTName }) {
+            lutManager.selectedSecondaryLUT = secondaryLUT
+            projectState.setSecondaryLUT(secondaryLUT.url)
+        }
+        
+        projectState.primaryLUTOpacity = project.settings.primaryLUTOpacity
+        projectState.secondLUTOpacity = project.settings.secondaryLUTOpacity
+        projectState.whiteBalanceValue = project.settings.whiteBalanceValue
+        projectState.exportQuality = project.settings.exportQuality
+        projectState.shouldOptimizeForBattery = project.settings.shouldOptimizeForBattery
+        
+        addToRecentProjects(project)
+        projectState.generatePreview()
+        
+        isLoading = false
+        return true
     }
     
     func applyTemplate(_ template: ProjectTemplate, to projectState: ProjectState, lutManager: LUTManager) async -> Bool {
         isLoading = true
         lastError = nil
         
-        do {
-            // Find and apply primary LUT
-            if let primaryLUT = lutManager.primaryLUTs.first(where: { $0.name == template.primaryLUTName }) {
-                lutManager.selectedPrimaryLUT = primaryLUT
-                projectState.setPrimaryLUT(primaryLUT.url)
-            }
-            
-            // Find and apply secondary LUT
-            if let secondaryLUTName = template.secondaryLUTName,
-               let secondaryLUT = lutManager.secondaryLUTs.first(where: { $0.name == secondaryLUTName }) {
-                lutManager.selectedSecondaryLUT = secondaryLUT
-                projectState.setSecondaryLUT(secondaryLUT.url)
-            } else {
-                lutManager.selectedSecondaryLUT = nil
-                projectState.setSecondaryLUT(nil)
-            }
-            
-            // Apply settings
-            projectState.primaryLUTOpacity = template.settings.primaryLUTOpacity
-            projectState.secondLUTOpacity = template.settings.secondaryLUTOpacity
-            projectState.whiteBalanceValue = template.settings.whiteBalanceValue
-            projectState.exportQuality = template.settings.exportQuality
-            projectState.shouldOptimizeForBattery = template.settings.shouldOptimizeForBattery
-            
-            // Generate preview if video is loaded
-            if !projectState.videoURLs.isEmpty {
-                projectState.generatePreview()
-            }
-            
-            print("✅ Template applied successfully: \(template.name)")
-            isLoading = false
-            return true
-            
-        } catch {
-            lastError = "Failed to apply template: \(error.localizedDescription)"
-            print("❌ Failed to apply template: \(error)")
-            isLoading = false
-            return false
+        if let primaryLUT = lutManager.primaryLUTs.first(where: { $0.name == template.primaryLUTName }) {
+            lutManager.selectedPrimaryLUT = primaryLUT
+            projectState.setPrimaryLUT(primaryLUT.url)
         }
+        
+        if let secondaryLUTName = template.secondaryLUTName,
+           let secondaryLUT = lutManager.secondaryLUTs.first(where: { $0.name == secondaryLUTName }) {
+            lutManager.selectedSecondaryLUT = secondaryLUT
+            projectState.setSecondaryLUT(secondaryLUT.url)
+        } else {
+            lutManager.selectedSecondaryLUT = nil
+            projectState.setSecondaryLUT(nil)
+        }
+        
+        projectState.primaryLUTOpacity = template.settings.primaryLUTOpacity
+        projectState.secondLUTOpacity = template.settings.secondaryLUTOpacity
+        projectState.whiteBalanceValue = template.settings.whiteBalanceValue
+        projectState.exportQuality = template.settings.exportQuality
+        projectState.shouldOptimizeForBattery = template.settings.shouldOptimizeForBattery
+        
+        if !projectState.videoURLs.isEmpty {
+            projectState.generatePreview()
+        }
+        
+        isLoading = false
+        return true
     }
     
     func deleteProject(_ project: SavedProject) async -> Bool {
@@ -401,6 +373,7 @@ class ProjectManager: ObservableObject {
     // MARK: - Recent Projects
     private func addToRecentProjects(_ project: SavedProject) {
         let recentItem = RecentProjectItem(
+            id: UUID(),
             projectId: project.id,
             name: project.name,
             lastAccessed: Date(),
@@ -558,7 +531,7 @@ struct ProjectTemplate: Identifiable {
 }
 
 struct RecentProjectItem: Identifiable, Codable {
-    let id = UUID()
+    let id: UUID
     let projectId: UUID
     let name: String
     let lastAccessed: Date

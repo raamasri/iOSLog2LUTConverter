@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 
 // MARK: - LUT Manager for Default and Custom LUTs
+@MainActor
 class LUTManager: ObservableObject {
     
     // MARK: - LUT Data Model
@@ -85,17 +86,6 @@ class LUTManager: ObservableObject {
         selectedSecondaryLUT != nil
     }
     
-    // MARK: - LUT Selection Methods for Project Management
-    func selectPrimaryLUT(_ lut: LUT) {
-        selectedPrimaryLUT = lut
-        print("✅ Selected primary LUT: \(lut.displayName)")
-    }
-    
-    func selectSecondaryLUT(_ lut: LUT) {
-        selectedSecondaryLUT = lut
-        print("✅ Selected secondary LUT: \(lut.displayName)")
-    }
-    
     // MARK: - Initialization
     init() {
         loadBuiltInLUTs()
@@ -103,30 +93,21 @@ class LUTManager: ObservableObject {
     
     // MARK: - LUT Loading
     func loadBuiltInLUTs() {
-        print("🔄 Starting to load built-in LUTs...")
         isLoading = true
         
-        DispatchQueue.global(qos: .background).async {
+        Task.detached(priority: .background) { [self] in
             let primaryLUTs = self.loadPrimaryLUTs()
             let secondaryLUTs = self.loadSecondaryLUTs()
             
-            print("✅ Loaded \(primaryLUTs.count) primary LUTs and \(secondaryLUTs.count) secondary LUTs")
-            
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.primaryLUTs = primaryLUTs
                 self.secondaryLUTs = secondaryLUTs
                 self.isLoading = false
-                
-                print("📊 LUT Manager State:")
-                print("   - Primary LUTs: \(self.primaryLUTs.count)")
-                print("   - Secondary LUTs: \(self.secondaryLUTs.count)")
-                print("   - Primary by Category: \(self.primaryLutsByCategory.keys.count) categories")
-                print("   - Secondary by Category: \(self.secondaryLutsByCategory.keys.count) categories")
             }
         }
     }
     
-    private func loadPrimaryLUTs() -> [LUT] {
+    nonisolated private func loadPrimaryLUTs() -> [LUT] {
         print("🔍 Loading Primary LUTs from app bundle...")
         
         // First try to find Primary LUTS subfolder (for simulator/development)
@@ -140,7 +121,7 @@ class LUTManager: ObservableObject {
         return loadPrimaryLUTsFromBundleRoot()
     }
     
-    private func loadSecondaryLUTs() -> [LUT] {
+    nonisolated private func loadSecondaryLUTs() -> [LUT] {
         print("🔍 Loading Secondary LUTs from app bundle...")
         
         // First try to find Secondary LUTS subfolder (for simulator/development)
@@ -154,7 +135,7 @@ class LUTManager: ObservableObject {
         return loadSecondaryLUTsFromBundleRoot()
     }
     
-    private func loadLUTsFromDirectory(_ directoryURL: URL, isPrimary: Bool) -> [LUT] {
+    nonisolated private func loadLUTsFromDirectory(_ directoryURL: URL, isPrimary: Bool) -> [LUT] {
         do {
             let lutFiles = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
                 .filter { $0.pathExtension.lowercased() == "cube" }
@@ -173,7 +154,7 @@ class LUTManager: ObservableObject {
         }
     }
     
-    private func loadPrimaryLUTsFromBundleRoot() -> [LUT] {
+    nonisolated private func loadPrimaryLUTsFromBundleRoot() -> [LUT] {
         let bundleURL = Bundle.main.bundleURL
         
         do {
@@ -201,7 +182,7 @@ class LUTManager: ObservableObject {
         }
     }
     
-    private func loadSecondaryLUTsFromBundleRoot() -> [LUT] {
+    nonisolated private func loadSecondaryLUTsFromBundleRoot() -> [LUT] {
         let bundleURL = Bundle.main.bundleURL
         
         do {
@@ -230,7 +211,7 @@ class LUTManager: ObservableObject {
     }
     
     // MARK: - LUT Creation Helper Methods
-    private func createPrimaryLUT(from url: URL) -> LUT? {
+    nonisolated private func createPrimaryLUT(from url: URL) -> LUT? {
         let fileName = url.lastPathComponent
         
         let lut = LUT(
@@ -247,7 +228,7 @@ class LUTManager: ObservableObject {
         return lut
     }
     
-    private func createSecondaryLUT(from url: URL) -> LUT? {
+    nonisolated private func createSecondaryLUT(from url: URL) -> LUT? {
         let fileName = url.lastPathComponent
         
         let lut = LUT(
@@ -265,7 +246,7 @@ class LUTManager: ObservableObject {
     }
     
     // MARK: - LUT Categorization
-    private func categorizePrimaryLUT(_ fileName: String) -> LUTCategory {
+    nonisolated private func categorizePrimaryLUT(_ fileName: String) -> LUTCategory {
         let name = fileName.lowercased()
         
         if name.contains("apple") {
@@ -279,7 +260,7 @@ class LUTManager: ObservableObject {
         }
     }
     
-    private func categorizeSecondaryLUT(_ fileName: String) -> LUTCategory {
+    nonisolated private func categorizeSecondaryLUT(_ fileName: String) -> LUTCategory {
         let name = fileName.lowercased()
         
         // TV Shows
@@ -317,7 +298,7 @@ class LUTManager: ObservableObject {
     }
     
     // MARK: - LUT Name Formatting
-    private func formatLUTName(_ fileName: String) -> String {
+    nonisolated private func formatLUTName(_ fileName: String) -> String {
         let nameWithoutExtension = fileName.replacingOccurrences(of: ".cube", with: "")
         
         // Special formatting for common patterns
@@ -329,7 +310,7 @@ class LUTManager: ObservableObject {
         return formatted.trimmingCharacters(in: .whitespaces)
     }
     
-    private func generateLUTDescription(_ fileName: String) -> String {
+    nonisolated private func generateLUTDescription(_ fileName: String) -> String {
         let category = fileName.contains("Secondary") ? 
             categorizeSecondaryLUT(fileName) : categorizePrimaryLUT(fileName)
         

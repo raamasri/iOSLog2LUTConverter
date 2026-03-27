@@ -140,25 +140,23 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
             }
         }
         
-        // Apply secondary LUT with opacity
         if let secondaryFilter = secondaryLUTFilter {
             secondaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let secondaryOutput = secondaryFilter.outputImage {
                 let opacity = lutSettings["secondaryLUTOpacity"] as? Float ?? 1.0
                 
-                // Simple blend based on opacity
                 if opacity < 1.0 {
-                    let blendFilter = CIFilter(name: "CISourceOverCompositing")
-                    blendFilter?.setValue(secondaryOutput, forKey: kCIInputImageKey)
-                    blendFilter?.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                    
-                    if let blendedOutput = blendFilter?.outputImage {
-                        processedImage = blendedOutput
+                    if let blendFilter = CIFilter(name: "CIDissolveTransition") {
+                        blendFilter.setValue(processedImage, forKey: kCIInputImageKey)
+                        blendFilter.setValue(secondaryOutput, forKey: "inputTargetImage")
+                        blendFilter.setValue(CGFloat(opacity), forKey: "inputTime")
+                        if let blendedOutput = blendFilter.outputImage {
+                            processedImage = blendedOutput
+                        }
                     }
                 } else {
                     processedImage = secondaryOutput
                 }
-                print("🎭 LUTVideoCompositor: Applied secondary LUT with opacity \(Int(opacity * 100))%")
             }
         }
         
@@ -208,19 +206,17 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
             }
         }
         
-        // Second pass: parse data
+        // Second pass: parse data -- only lines whose first token is a valid number
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            if !trimmed.isEmpty && !trimmed.hasPrefix("#") && !trimmed.hasPrefix("TITLE") && !trimmed.hasPrefix("LUT_") {
-                // Parse RGB values
-                let values = trimmed.components(separatedBy: .whitespaces)
-                if values.count >= 3 {
-                    for i in 0..<3 {
-                        if let value = Float(values[i]) {
-                            cubeData.append(value)
-                        }
-                    }
+            guard !trimmed.isEmpty else { continue }
+
+            let values = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard values.count >= 3, Float(values[0]) != nil else { continue }
+
+            for i in 0..<3 {
+                if let value = Float(values[i]) {
+                    cubeData.append(value)
                 }
             }
         }
@@ -233,33 +229,29 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
         let lutData = lutInfo.data
         let lutSize = lutInfo.dimension
         
-        // Create a 3D LUT (32x32x32 is a good standard size)
         let cubeSize = 32
         var cubeData: [Float] = []
-        cubeData.reserveCapacity(cubeSize * cubeSize * cubeSize * 3)
+        cubeData.reserveCapacity(cubeSize * cubeSize * cubeSize * 4)
         
-        // Convert data to float array for easier processing
         let floatArray = lutData.withUnsafeBytes { bytes in
             return Array(bytes.bindMemory(to: Float.self))
         }
         
-        // For each position in the 3D cube, interpolate from the 1D LUT
         for b in 0..<cubeSize {
             for g in 0..<cubeSize {
                 for r in 0..<cubeSize {
-                    // Convert 3D position to normalized RGB values (0.0 to 1.0)
                     let rNorm = Float(r) / Float(cubeSize - 1)
                     let gNorm = Float(g) / Float(cubeSize - 1)
                     let bNorm = Float(b) / Float(cubeSize - 1)
                     
-                    // Apply 1D LUT to each channel independently
-                    let rOut = interpolate1D(value: rNorm, lutData: floatArray, lutSize: lutSize, channel: 0)
-                    let gOut = interpolate1D(value: gNorm, lutData: floatArray, lutSize: lutSize, channel: 1)
-                    let bOut = interpolate1D(value: bNorm, lutData: floatArray, lutSize: lutSize, channel: 2)
+                    let rOut = LUTParsingUtils.interpolate1D(value: rNorm, lutData: floatArray, lutSize: lutSize, channel: 0)
+                    let gOut = LUTParsingUtils.interpolate1D(value: gNorm, lutData: floatArray, lutSize: lutSize, channel: 1)
+                    let bOut = LUTParsingUtils.interpolate1D(value: bNorm, lutData: floatArray, lutSize: lutSize, channel: 2)
                     
                     cubeData.append(rOut)
                     cubeData.append(gOut)
                     cubeData.append(bOut)
+                    cubeData.append(1.0)
                 }
             }
         }
@@ -267,78 +259,166 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
         let convertedData = Data(bytes: cubeData, count: cubeData.count * MemoryLayout<Float>.size)
         return LUTInfo(data: convertedData, is1D: false, dimension: cubeSize)
     }
-    
-    private func interpolate1D(value: Float, lutData: [Float], lutSize: Int, channel: Int) -> Float {
-        // Clamp input value to [0, 1]
+}
+
+// MARK: - Shared LUT Parsing Utilities
+enum LUTParsingUtils {
+    struct LUTInfo {
+        let data: Data
+        let is1D: Bool
+        let dimension: Int
+    }
+
+    static func parseLUTFile(_ url: URL) throws -> LUTInfo {
+        guard url.pathExtension.lowercased() == "cube" else {
+            throw LUTProcessor.LUTProcessingError.invalidLUTFile("Only .cube files are supported")
+        }
+        let content = try String(contentsOf: url, encoding: .utf8)
+        return try parseCubeFile(content)
+    }
+
+    static func parseCubeFile(_ content: String) throws -> LUTInfo {
+        let lines = content.components(separatedBy: .newlines)
+        var cubeSize = 32
+        var lutSize1D = 0
+        var cubeData: [Float] = []
+        var is1D = false
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("LUT_3D_SIZE") {
+                let components = trimmed.components(separatedBy: .whitespaces)
+                if components.count > 1, let size = Int(components[1]) {
+                    cubeSize = size
+                    is1D = false
+                }
+            } else if trimmed.hasPrefix("LUT_1D_SIZE") {
+                let components = trimmed.components(separatedBy: .whitespaces)
+                if components.count > 1, let size = Int(components[1]) {
+                    lutSize1D = size
+                    is1D = true
+                }
+            }
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let values = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard values.count >= 3, Float(values[0]) != nil else { continue }
+            for i in 0..<3 {
+                if let value = Float(values[i]) {
+                    cubeData.append(value)
+                }
+            }
+        }
+
+        if is1D {
+            let expectedSize = lutSize1D * 3
+            guard cubeData.count == expectedSize else {
+                throw LUTProcessor.LUTProcessingError.invalidLUTFile("Invalid 1D LUT data size - Expected: \(expectedSize), Got: \(cubeData.count)")
+            }
+        } else {
+            let expectedSize = cubeSize * cubeSize * cubeSize * 3
+            guard cubeData.count == expectedSize else {
+                throw LUTProcessor.LUTProcessingError.invalidLUTFile("Invalid 3D LUT data size - Expected: \(expectedSize), Got: \(cubeData.count)")
+            }
+            if cubeSize > 50 {
+                cubeData = downsample3DLUT(cubeData, fromSize: cubeSize, toSize: 32)
+                cubeSize = 32
+            }
+        }
+
+        var rgbaData: [Float] = []
+        rgbaData.reserveCapacity(cubeData.count / 3 * 4)
+        for i in stride(from: 0, to: cubeData.count, by: 3) {
+            rgbaData.append(cubeData[i])
+            rgbaData.append(cubeData[i + 1])
+            rgbaData.append(cubeData[i + 2])
+            rgbaData.append(1.0)
+        }
+
+        let data = Data(bytes: rgbaData, count: rgbaData.count * MemoryLayout<Float>.size)
+        return LUTInfo(data: data, is1D: is1D, dimension: is1D ? lutSize1D : cubeSize)
+    }
+
+    static func convert1DTo3D(_ lutInfo: LUTInfo) throws -> LUTInfo {
+        let lutData = lutInfo.data
+        let lutSize = lutInfo.dimension
+
+        let cubeSize = 32
+        var cubeData: [Float] = []
+        cubeData.reserveCapacity(cubeSize * cubeSize * cubeSize * 4)
+
+        let floatArray = lutData.withUnsafeBytes { bytes in
+            return Array(bytes.bindMemory(to: Float.self))
+        }
+
+        for b in 0..<cubeSize {
+            for g in 0..<cubeSize {
+                for r in 0..<cubeSize {
+                    let rNorm = Float(r) / Float(cubeSize - 1)
+                    let gNorm = Float(g) / Float(cubeSize - 1)
+                    let bNorm = Float(b) / Float(cubeSize - 1)
+
+                    let rOut = interpolate1D(value: rNorm, lutData: floatArray, lutSize: lutSize, channel: 0)
+                    let gOut = interpolate1D(value: gNorm, lutData: floatArray, lutSize: lutSize, channel: 1)
+                    let bOut = interpolate1D(value: bNorm, lutData: floatArray, lutSize: lutSize, channel: 2)
+
+                    cubeData.append(rOut)
+                    cubeData.append(gOut)
+                    cubeData.append(bOut)
+                    cubeData.append(1.0)
+                }
+            }
+        }
+
+        let convertedData = Data(bytes: cubeData, count: cubeData.count * MemoryLayout<Float>.size)
+        return LUTInfo(data: convertedData, is1D: false, dimension: cubeSize)
+    }
+
+    static func interpolate1D(value: Float, lutData: [Float], lutSize: Int, channel: Int) -> Float {
         let clampedValue = max(0.0, min(1.0, value))
-        
-        // Convert to LUT index space
         let lutIndex = clampedValue * Float(lutSize - 1)
         let lowerIndex = Int(floor(lutIndex))
         let upperIndex = min(lowerIndex + 1, lutSize - 1)
         let fraction = lutIndex - Float(lowerIndex)
-        
-        // Get the values from the LUT (each entry has 3 components: R, G, B)
         let lowerValue = lutData[lowerIndex * 3 + channel]
         let upperValue = lutData[upperIndex * 3 + channel]
-        
-        // Linear interpolation
         return lowerValue + fraction * (upperValue - lowerValue)
     }
-    
-    // MARK: - 3D LUT Downsampling
-    private func downsample3DLUT(_ lutData: [Float], fromSize: Int, toSize: Int) -> [Float] {
-        print("🔄 Downsampling 3D LUT from \(fromSize)³ to \(toSize)³...")
-        
+
+    static func downsample3DLUT(_ lutData: [Float], fromSize: Int, toSize: Int) -> [Float] {
         var downsampledData: [Float] = []
         downsampledData.reserveCapacity(toSize * toSize * toSize * 3)
-        
         let scale = Float(fromSize - 1) / Float(toSize - 1)
-        
-        // For each position in the target LUT
+
         for b in 0..<toSize {
             for g in 0..<toSize {
                 for r in 0..<toSize {
-                    // Calculate the corresponding position in the source LUT
                     let srcR = Float(r) * scale
                     let srcG = Float(g) * scale
                     let srcB = Float(b) * scale
-                    
-                    // Use trilinear interpolation to get the RGB values
-                    let interpolatedRGB = trilinearInterpolate(
-                        lutData: lutData,
-                        size: fromSize,
-                        r: srcR,
-                        g: srcG,
-                        b: srcB
-                    )
-                    
+                    let interpolatedRGB = trilinearInterpolate(lutData: lutData, size: fromSize, r: srcR, g: srcG, b: srcB)
                     downsampledData.append(interpolatedRGB.r)
                     downsampledData.append(interpolatedRGB.g)
                     downsampledData.append(interpolatedRGB.b)
                 }
             }
         }
-        
-        print("✅ Downsampling complete: \(downsampledData.count) values generated")
         return downsampledData
     }
-    
-    private func trilinearInterpolate(lutData: [Float], size: Int, r: Float, g: Float, b: Float) -> (r: Float, g: Float, b: Float) {
-        // Get the 8 corner points for trilinear interpolation
+
+    static func trilinearInterpolate(lutData: [Float], size: Int, r: Float, g: Float, b: Float) -> (r: Float, g: Float, b: Float) {
         let r0 = Int(floor(r))
         let r1 = min(r0 + 1, size - 1)
         let g0 = Int(floor(g))
         let g1 = min(g0 + 1, size - 1)
         let b0 = Int(floor(b))
         let b1 = min(b0 + 1, size - 1)
-        
-        // Get interpolation weights
         let rWeight = r - Float(r0)
         let gWeight = g - Float(g0)
         let bWeight = b - Float(b0)
-        
-        // Get the 8 corner values
         let c000 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b0)
         let c001 = getLUTValue(lutData: lutData, size: size, r: r0, g: g0, b: b1)
         let c010 = getLUTValue(lutData: lutData, size: size, r: r0, g: g1, b: b0)
@@ -347,40 +427,23 @@ class LUTVideoCompositor: NSObject, AVVideoCompositing {
         let c101 = getLUTValue(lutData: lutData, size: size, r: r1, g: g0, b: b1)
         let c110 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b0)
         let c111 = getLUTValue(lutData: lutData, size: size, r: r1, g: g1, b: b1)
-        
-        // Perform trilinear interpolation
-        let c00 = lerp(c000, c100, rWeight)
-        let c01 = lerp(c001, c101, rWeight)
-        let c10 = lerp(c010, c110, rWeight)
-        let c11 = lerp(c011, c111, rWeight)
-        
-        let c0 = lerp(c00, c10, gWeight)
-        let c1 = lerp(c01, c11, gWeight)
-        
-        return lerp(c0, c1, bWeight)
+        let c00 = lerpRGB(c000, c100, rWeight)
+        let c01 = lerpRGB(c001, c101, rWeight)
+        let c10 = lerpRGB(c010, c110, rWeight)
+        let c11 = lerpRGB(c011, c111, rWeight)
+        let c0 = lerpRGB(c00, c10, gWeight)
+        let c1 = lerpRGB(c01, c11, gWeight)
+        return lerpRGB(c0, c1, bWeight)
     }
-    
-    private func getLUTValue(lutData: [Float], size: Int, r: Int, g: Int, b: Int) -> (r: Float, g: Float, b: Float) {
+
+    static func getLUTValue(lutData: [Float], size: Int, r: Int, g: Int, b: Int) -> (r: Float, g: Float, b: Float) {
         let index = (b * size * size + g * size + r) * 3
-        
-        guard index + 2 < lutData.count else {
-            // Return safe default if index is out of bounds
-            return (r: 0.0, g: 0.0, b: 0.0)
-        }
-        
-        return (
-            r: lutData[index],
-            g: lutData[index + 1],
-            b: lutData[index + 2]
-        )
+        guard index + 2 < lutData.count else { return (r: 0.0, g: 0.0, b: 0.0) }
+        return (r: lutData[index], g: lutData[index + 1], b: lutData[index + 2])
     }
-    
-    private func lerp(_ a: (r: Float, g: Float, b: Float), _ b: (r: Float, g: Float, b: Float), _ t: Float) -> (r: Float, g: Float, b: Float) {
-        return (
-            r: a.r + t * (b.r - a.r),
-            g: a.g + t * (b.g - a.g),
-            b: a.b + t * (b.b - a.b)
-        )
+
+    static func lerpRGB(_ a: (r: Float, g: Float, b: Float), _ b: (r: Float, g: Float, b: Float), _ t: Float) -> (r: Float, g: Float, b: Float) {
+        return (r: a.r + t * (b.r - a.r), g: a.g + t * (b.g - a.g), b: a.b + t * (b.b - a.b))
     }
 }
 
@@ -795,19 +858,17 @@ class LUTProcessor: ObservableObject {
             }
         }
         
-        // Second pass: parse data
+        // Second pass: parse data -- only lines whose first token is a valid number
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            if !trimmed.isEmpty && !trimmed.hasPrefix("#") && !trimmed.hasPrefix("TITLE") && !trimmed.hasPrefix("LUT_") {
-                // Parse RGB values
-                let values = trimmed.components(separatedBy: .whitespaces)
-                if values.count >= 3 {
-                    for i in 0..<3 {
-                        if let value = Float(values[i]) {
-                            cubeData.append(value)
-                        }
-                    }
+            guard !trimmed.isEmpty else { continue }
+
+            let values = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard values.count >= 3, Float(values[0]) != nil else { continue }
+
+            for i in 0..<3 {
+                if let value = Float(values[i]) {
+                    cubeData.append(value)
                 }
             }
         }
@@ -1030,238 +1091,72 @@ class LUTProcessor: ObservableObject {
         print("   - Secondary LUT: \(secondaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
         print("   - Processing order: Original → Primary LUT → White Balance → Secondary LUT")
         
-        // Apply primary LUT with opacity support
         if let primaryFilter = primaryLUTFilter {
             primaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let primaryOutput = primaryFilter.outputImage {
-                // Handle primary LUT opacity using proper blending
                 if settings.primaryLUTOpacity < 1.0 {
-                    // Use CISourceOverCompositing for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
-                        // First, apply opacity to the LUT output using CIColorMatrix
-                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
-                            opacityFilter.setValue(primaryOutput, forKey: kCIInputImageKey)
-                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.primaryLUTOpacity)), forKey: "inputAVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
-                            
-                            if let opacityOutput = opacityFilter.outputImage {
-                                // Now blend the opacity-adjusted LUT output over the original
-                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
-                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                                
-                                if let blendedOutput = blendFilter.outputImage {
-                                    processedImage = blendedOutput
-                                    print("   - ✅ Primary LUT applied with \(Int(settings.primaryLUTOpacity * 100))% opacity")
-                                } else {
-                                    processedImage = primaryOutput
-                                    print("   - ❌ Primary LUT blend failed, using full opacity")
-                                }
-                            } else {
-                                processedImage = primaryOutput
-                                print("   - ❌ Primary LUT opacity adjustment failed, using full opacity")
-                            }
-                        } else {
-                            processedImage = primaryOutput
-                            print("   - ❌ Could not create opacity filter for primary LUT, using full opacity")
-                        }
-                    } else {
-                        processedImage = primaryOutput
-                        print("   - ❌ Could not create blend filter for primary LUT, using full opacity")
-                    }
+                    processedImage = blendWithOpacity(original: processedImage, lutResult: primaryOutput, opacity: settings.primaryLUTOpacity)
                 } else {
                     processedImage = primaryOutput
-                    print("   - ✅ Primary LUT applied successfully")
                 }
-            } else {
-                print("   - ❌ Primary LUT failed to generate output")
             }
-        } else {
-            print("   - ⚠️ No primary LUT to apply")
         }
         
-        // Apply white balance adjustment after primary LUT
         if settings.whiteBalanceAdjustment != 0 {
             processedImage = applyWhiteBalanceAdjustment(processedImage, adjustment: settings.whiteBalanceAdjustment)
-            let baseTemp = 5500
-            let tempChange = Int(settings.whiteBalanceAdjustment * 280)
-            let finalTemp = baseTemp + tempChange
-            print("   - ✅ White balance applied: \(settings.whiteBalanceAdjustment) (\(finalTemp)K)")
         }
         
-        // Apply secondary LUT with proper chaining and opacity support
         if let secondaryFilter = secondaryLUTFilter {
             secondaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let secondaryOutput = secondaryFilter.outputImage {
-                // Handle opacity blending
                 if settings.secondaryLUTOpacity < 1.0 {
-                    // Use CISourceOverCompositing for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
-                        // First, apply opacity to the LUT output using CIColorMatrix
-                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
-                            opacityFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
-                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.secondaryLUTOpacity)), forKey: "inputAVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
-                            
-                            if let opacityOutput = opacityFilter.outputImage {
-                                // Now blend the opacity-adjusted LUT output over the original
-                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
-                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                                
-                                if let blendedOutput = blendFilter.outputImage {
-                                    processedImage = blendedOutput
-                                    print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity")
-                                } else {
-                                    print("   - ❌ Secondary LUT blend failed, using full opacity")
-                                    processedImage = secondaryOutput
-                                }
-                            } else {
-                                print("   - ❌ Secondary LUT opacity adjustment failed, using full opacity")
-                                processedImage = secondaryOutput
-                            }
-                        } else {
-                            print("   - ❌ Could not create opacity filter for secondary LUT, using full opacity")
-                            processedImage = secondaryOutput
-                        }
-                    } else {
-                        print("   - ❌ Could not create blend filter for secondary LUT, using full opacity")
-                        processedImage = secondaryOutput
-                    }
+                    processedImage = blendWithOpacity(original: processedImage, lutResult: secondaryOutput, opacity: settings.secondaryLUTOpacity)
                 } else {
-                    // Full opacity - use secondary output directly
                     processedImage = secondaryOutput
-                    print("   - ✅ Secondary LUT applied at 100% opacity")
                 }
-            } else {
-                print("   - ❌ Secondary LUT failed to generate output")
             }
-        } else {
-            print("   - ⚠️ No secondary LUT to apply")
         }
-        
-        print("🎨 LUT Processor: Image processing completed")
-        print("   - Output image extent: \(processedImage.extent)")
         
         return processedImage
     }
     
-    // MARK: - Simplified Image Processing (Direct LUT Application)
+    private func blendWithOpacity(original: CIImage, lutResult: CIImage, opacity: Float) -> CIImage {
+        guard let blendFilter = CIFilter(name: "CIDissolveTransition") else { return lutResult }
+        blendFilter.setValue(original, forKey: kCIInputImageKey)
+        blendFilter.setValue(lutResult, forKey: "inputTargetImage")
+        blendFilter.setValue(CGFloat(opacity), forKey: "inputTime")
+        return blendFilter.outputImage ?? lutResult
+    }
+    
     func processImageDirect(_ image: CIImage, settings: LUTSettings) -> CIImage? {
         var processedImage = image
         
-        print("🎨 LUT Processor (Direct): Starting image processing...")
-        print("   - Input image extent: \(image.extent)")
-        print("   - Primary LUT: \(primaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
-        print("   - Secondary LUT: \(secondaryLUTFilter != nil ? "✅ Loaded" : "❌ Not loaded")")
-        print("   - Processing order: Original → Primary LUT → White Balance → Secondary LUT")
-        
-        // Apply primary LUT directly with opacity support
         if let primaryFilter = primaryLUTFilter {
             primaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let primaryOutput = primaryFilter.outputImage {
-                // Handle primary LUT opacity
                 if settings.primaryLUTOpacity < 1.0 {
-                    // Use CISourceOverCompositing for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
-                        // First, apply opacity to the LUT output using CIColorMatrix
-                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
-                            opacityFilter.setValue(primaryOutput, forKey: kCIInputImageKey)
-                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.primaryLUTOpacity)), forKey: "inputAVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
-                            
-                            if let opacityOutput = opacityFilter.outputImage {
-                                // Now blend the opacity-adjusted LUT output over the original
-                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
-                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                                
-                                if let blendedOutput = blendFilter.outputImage {
-                                    processedImage = blendedOutput
-                                    print("   - ✅ Primary LUT applied with \(Int(settings.primaryLUTOpacity * 100))% opacity (direct)")
-                                } else {
-                                    processedImage = primaryOutput
-                                    print("   - ❌ Primary LUT blend failed, using full opacity (direct)")
-                                }
-                            } else {
-                                processedImage = primaryOutput
-                                print("   - ❌ Primary LUT opacity adjustment failed, using full opacity (direct)")
-                            }
-                        } else {
-                            processedImage = primaryOutput
-                            print("   - ❌ Could not create opacity filter for primary LUT, using full opacity (direct)")
-                        }
-                    } else {
-                        processedImage = primaryOutput
-                        print("   - ❌ Could not create blend filter for primary LUT, using full opacity (direct)")
-                    }
+                    processedImage = blendWithOpacity(original: processedImage, lutResult: primaryOutput, opacity: settings.primaryLUTOpacity)
                 } else {
                     processedImage = primaryOutput
-                    print("   - ✅ Primary LUT applied successfully (direct)")
                 }
             }
         }
         
-        // Apply white balance adjustment after primary LUT
         if settings.whiteBalanceAdjustment != 0 {
             processedImage = applyWhiteBalanceAdjustment(processedImage, adjustment: settings.whiteBalanceAdjustment)
-            let baseTemp = 5500
-            let tempChange = Int(settings.whiteBalanceAdjustment * 280)
-            let finalTemp = baseTemp + tempChange
-            print("   - ✅ White balance applied: \(settings.whiteBalanceAdjustment) (\(finalTemp)K) (direct)")
         }
         
-        // Apply secondary LUT directly with opacity support
         if let secondaryFilter = secondaryLUTFilter {
             secondaryFilter.setValue(processedImage, forKey: kCIInputImageKey)
             if let secondaryOutput = secondaryFilter.outputImage {
-                if settings.secondaryLUTOpacity >= 1.0 {
-                    // Full opacity - use secondary output directly
-                    processedImage = secondaryOutput
-                    print("   - ✅ Secondary LUT applied at 100% opacity (direct)")
+                if settings.secondaryLUTOpacity < 1.0 {
+                    processedImage = blendWithOpacity(original: processedImage, lutResult: secondaryOutput, opacity: settings.secondaryLUTOpacity)
                 } else {
-                    // Use CISourceOverCompositing for proper opacity blending
-                    if let blendFilter = CIFilter(name: "CISourceOverCompositing") {
-                        // First, apply opacity to the LUT output using CIColorMatrix
-                        if let opacityFilter = CIFilter(name: "CIColorMatrix") {
-                            opacityFilter.setValue(secondaryOutput, forKey: kCIInputImageKey)
-                            opacityFilter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: CGFloat(settings.secondaryLUTOpacity)), forKey: "inputAVector")
-                            opacityFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
-                            
-                            if let opacityOutput = opacityFilter.outputImage {
-                                // Now blend the opacity-adjusted LUT output over the original
-                                blendFilter.setValue(opacityOutput, forKey: kCIInputImageKey)
-                                blendFilter.setValue(processedImage, forKey: kCIInputBackgroundImageKey)
-                                
-                                if let blendedOutput = blendFilter.outputImage {
-                                    processedImage = blendedOutput
-                                    print("   - ✅ Secondary LUT applied with \(Int(settings.secondaryLUTOpacity * 100))% opacity (direct)")
-                                } else {
-                                    print("   - ❌ Secondary LUT blend failed, using primary only")
-                                }
-                            } else {
-                                print("   - ❌ Secondary LUT opacity adjustment failed, using primary only")
-                            }
-                        } else {
-                            print("   - ❌ Could not create opacity filter for secondary LUT, using primary only")
-                        }
-                    } else {
-                        print("   - ❌ Could not create blend filter for secondary LUT, using primary only")
-                    }
+                    processedImage = secondaryOutput
                 }
             }
         }
         
-        print("🎨 LUT Processor (Direct): Image processing completed")
         return processedImage
     }
     
@@ -1311,18 +1206,6 @@ class LUTProcessor: ObservableObject {
         return (max(0, min(1, red)), max(0, min(1, green)), max(0, min(1, blue)))
     }
     
-    private func createAlphaMask(opacity: Float, size: CGSize) -> CIImage {
-        let color = CIColor(red: 0, green: 0, blue: 0, alpha: CGFloat(opacity))
-        let colorFilter = CIFilter(name: "CIConstantColorGenerator")
-        colorFilter?.setValue(color, forKey: kCIInputColorKey)
-        
-        let cropFilter = CIFilter(name: "CICrop")
-        cropFilter?.setValue(colorFilter?.outputImage, forKey: kCIInputImageKey)
-        cropFilter?.setValue(CIVector(cgRect: CGRect(origin: .zero, size: size)), forKey: "inputRectangle")
-        
-        return cropFilter?.outputImage ?? CIImage()
-    }
-    
     // MARK: - Video Processing
     func processVideo(_ videoURL: URL, settings: LUTSettings, outputURL: URL) async throws {
         updateStatus("Starting video processing...")
@@ -1364,6 +1247,9 @@ class LUTProcessor: ObservableObject {
         
         let assetReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         assetReader.add(assetReaderOutput)
+        
+        var assetReaderAudioOutput: AVAssetReaderTrackOutput?
+        var assetWriterAudioInput: AVAssetWriterInput?
         
         // Set up asset writer with enhanced quality settings
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
@@ -1410,6 +1296,22 @@ class LUTProcessor: ObservableObject {
             sourcePixelBufferAttributes: pixelBufferAttributes
         )
         
+        // Set up audio passthrough
+        if let audioTrack = (try? await asset.loadTracks(withMediaType: .audio))?.first {
+            let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+            if assetReader.canAdd(audioOutput) {
+                assetReader.add(audioOutput)
+                assetReaderAudioOutput = audioOutput
+            }
+            
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+            audioInput.expectsMediaDataInRealTime = false
+            if assetWriter.canAdd(audioInput) {
+                assetWriter.add(audioInput)
+                assetWriterAudioInput = audioInput
+            }
+        }
+        
         assetWriter.add(assetWriterInput)
         
         // Start reading and writing
@@ -1455,7 +1357,11 @@ class LUTProcessor: ObservableObject {
                         
                         // Create output pixel buffer with better error handling
                         var outputPixelBuffer: CVPixelBuffer?
-                        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferAdaptor.pixelBufferPool!, &outputPixelBuffer)
+                        guard let pool = pixelBufferAdaptor.pixelBufferPool else {
+                            print("❌ Pixel buffer pool is nil")
+                            return
+                        }
+                        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
                         
                         if poolStatus != kCVReturnSuccess {
                             print("❌ Failed to create pixel buffer from pool: \(poolStatus)")
@@ -1498,10 +1404,19 @@ class LUTProcessor: ObservableObject {
                         shouldContinue = false
                     }
                 } else {
-                    // Wait a bit for the writer to be ready
-                    Thread.sleep(forTimeInterval: 0.01) // 10ms
+                    usleep(10_000) // 10ms -- avoid Thread.sleep in async context
                 }
             }
+        }
+        
+        // Copy audio samples
+        if let audioOutput = assetReaderAudioOutput, let audioInput = assetWriterAudioInput {
+            while let audioBuffer = audioOutput.copyNextSampleBuffer() {
+                if audioInput.isReadyForMoreMediaData {
+                    audioInput.append(audioBuffer)
+                }
+            }
+            audioInput.markAsFinished()
         }
         
         print("🎬 Finished processing \(frameCount) frames")
@@ -1512,7 +1427,7 @@ class LUTProcessor: ObservableObject {
             throw LUTProcessingError.videoProcessingFailed("Asset reader failed: \(error)")
         }
         
-        // Finish writing
+        // Finish writing — mark video input finished (audio already finished above if present)
         assetWriterInput.markAsFinished()
         await assetWriter.finishWriting()
         

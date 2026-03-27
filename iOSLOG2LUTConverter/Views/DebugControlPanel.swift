@@ -438,7 +438,7 @@ struct DebugControlPanel: View {
             return
         }
         
-        let randomLUT = lutManager.primaryLUTs.randomElement()!
+        guard let randomLUT = lutManager.primaryLUTs.randomElement() else { return }
         lutManager.selectPrimaryLUT(randomLUT)
         addLog("🎨 Selected primary LUT: \(randomLUT.displayName)")
     }
@@ -449,7 +449,7 @@ struct DebugControlPanel: View {
             return
         }
         
-        let randomLUT = lutManager.secondaryLUTs.randomElement()!
+        guard let randomLUT = lutManager.secondaryLUTs.randomElement() else { return }
         lutManager.selectSecondaryLUT(randomLUT)
         addLog("🎭 Selected secondary LUT: \(randomLUT.displayName)")
     }
@@ -556,7 +556,7 @@ struct LogViewerView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(logs, id: \.self) { log in

@@ -19,6 +19,7 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - Private Properties
     private let lutProcessor = LUTProcessor()
+    private let sharedCIContext = CIContext()
     private var cancellables = Set<AnyCancellable>()
     private var startTime: Date?
     
@@ -167,6 +168,7 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - Progress Management
     private func updateOverallProgress(videoIndex: Int? = nil, lutProgress: Double = 0.0) {
+        guard totalVideos > 0 else { return }
         let videoProgress = Double(videoIndex ?? currentVideoIndex) / Double(totalVideos)
         let currentVideoProgress = lutProgress / Double(totalVideos)
         
@@ -226,9 +228,7 @@ class VideoProcessor: ObservableObject {
         
         let ciImage = try await lutProcessor.generatePreview(from: videoURL, settings: lutSettings)
         
-        // Convert CIImage to UIImage
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+        guard let cgImage = sharedCIContext.createCGImage(ciImage, from: ciImage.extent) else {
             throw ProcessingError.processingFailed("Could not generate preview image")
         }
         
@@ -252,9 +252,7 @@ class VideoProcessor: ObservableObject {
         
         let ciImage = try await lutProcessor.generatePreviewAtTime(from: videoURL, timeSeconds: timeSeconds, settings: lutSettings)
         
-        // Convert CIImage to UIImage
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+        guard let cgImage = sharedCIContext.createCGImage(ciImage, from: ciImage.extent) else {
             throw ProcessingError.processingFailed("Could not generate preview image at \(timeSeconds)s")
         }
         

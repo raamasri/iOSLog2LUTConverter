@@ -9,23 +9,11 @@ struct LUTSelectorView: View {
     
     // Computed property to get the appropriate LUT collection
     private var lutsByCategory: [LUTManager.LUTCategory: [LUTManager.LUT]] {
-        let luts = if isSecondary {
-            lutManager.secondaryLutsByCategory
-        } else {
-            lutManager.primaryLutsByCategory
-        }
-        
-        print("🔍 LUTSelectorView - \(isSecondary ? "Secondary" : "Primary") LUTs by category:")
-        for (category, categoryLuts) in luts {
-            print("   - \(category.rawValue): \(categoryLuts.count) LUTs")
-        }
-        print("   - Total categories: \(luts.keys.count)")
-        
-        return luts
+        isSecondary ? lutManager.secondaryLutsByCategory : lutManager.primaryLutsByCategory
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 20) {
                     // Header with icon and description
@@ -49,13 +37,9 @@ struct LUTSelectorView: View {
                     }
                     .padding(.top)
                     
-                    // Debug info
+                    #if DEBUG
                     if lutsByCategory.isEmpty {
                         VStack(spacing: 8) {
-                            Text("🔍 Debug Info")
-                                .font(.headline)
-                                .foregroundStyle(.orange)
-                            
                             Text("No LUTs found in \(isSecondary ? "secondary" : "primary") collection")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -68,6 +52,7 @@ struct LUTSelectorView: View {
                         .background(Color.orange.opacity(0.1))
                         .cornerRadius(8)
                     }
+                    #endif
                     
                     // LUT Categories
                     ForEach(Array(lutsByCategory.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { category in
@@ -158,15 +143,6 @@ struct LUTSelectorView: View {
                 fileImportManager.lastImportStatus = .error("Failed to import LUT: \(error.localizedDescription)")
                 print("❌ Failed to import custom LUT: \(error.localizedDescription)")
             }
-        }
-        .onAppear {
-            print("👁️ LUTSelectorView appeared - \(isSecondary ? "Secondary" : "Primary") mode")
-            print("📊 Current LUT counts:")
-            print("   - Primary LUTs: \(lutManager.primaryLUTs.count)")
-            print("   - Secondary LUTs: \(lutManager.secondaryLUTs.count)")
-            print("🔍 LUTSelectorView: Current picker flags:")
-            print("   - isShowingLUTPicker: \(fileImportManager.isShowingLUTPicker)")
-            print("   - isShowingSecondaryLUTPicker: \(fileImportManager.isShowingSecondaryLUTPicker)")
         }
     }
 }

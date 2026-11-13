@@ -3,6 +3,7 @@ import PhotosUI
 import Photos
 import CoreTransferable
 import Combine
+import AVFoundation
 
 // MARK: - Movie Transferable Type for PhotosPicker
 struct Movie: Transferable {
@@ -12,21 +13,12 @@ struct Movie: Transferable {
         FileRepresentation(contentType: .movie) { movie in
             SentTransferredFile(movie.url)
         } importing: { received in
-            // Preserve original filename instead of hardcoding "movie.mov"
-            let originalFilename = received.file.lastPathComponent
-            let copy = URL.documentsDirectory.appending(path: originalFilename)
-            
-            // If file already exists, add a unique identifier
-            var finalURL = copy
-            var counter = 1
-            while FileManager.default.fileExists(atPath: finalURL.path()) {
-                let nameWithoutExtension = URL(fileURLWithPath: originalFilename).deletingPathExtension().lastPathComponent
-                let fileExtension = URL(fileURLWithPath: originalFilename).pathExtension
-                let uniqueName = "\(nameWithoutExtension)_\(counter).\(fileExtension)"
-                finalURL = URL.documentsDirectory.appending(path: uniqueName)
-                counter += 1
-            }
-            
+            // A unique directory preserves the filename without concurrent imports
+            // racing to overwrite one another.
+            let directory = URL.documentsDirectory.appendingPathComponent("ImportedVideos", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let finalURL = directory.appendingPathComponent(received.file.lastPathComponent)
             try FileManager.default.copyItem(at: received.file, to: finalURL)
             return Self.init(url: finalURL)
         }
@@ -38,9 +30,15 @@ struct ContentView: View {
     @StateObject private var fileImportManager = FileImportManager()
     @StateObject private var lutManager = LUTManager()
     @StateObject private var projectState = ProjectState()
+    @StateObject private var exportProcessor = VideoProcessor()
     @State private var videoCount = 0
     @State private var videoURLs: [URL] = []
     @State private var selectedVideoItems: [PhotosPickerItem] = []
+    @State private var isShowingVideoPicker = false
+    @State private var isShowingVideoFileImporter = false
+    @State private var isImportingVideo = false
+    @State private var importTask: Task<Void, Never>?
+    @State private var importError: String?
     @State private var showingDebugPanel = false
     @State private var showingProjectManagement = false
     @State private var previewDebounceTask: Task<Void, Never>?
@@ -54,7 +52,7 @@ struct ContentView: View {
                     // Background gradient with Apple-like aesthetics
                     backgroundGradient
                     
-                    if horizontalSizeClass == .regular {
+                    if horizontalSizeClass == .regular || geometry.size.width > geometry.size.height {
                         // iPad Interface - Side-by-side layout
                         iPadInterface(geometry: geometry)
                     } else {
@@ -85,48 +83,52 @@ struct ContentView: View {
                 lutManager: lutManager
             )
         }
-        // Handle photo picker selection
-        .onChange(of: selectedVideoItems) { _, newItems in
-            guard !newItems.isEmpty else { return }
-            
-            if projectState.batchMode {
-                Task {
-                    var loadedVideos: [URL] = []
-                    for item in newItems {
-                        do {
-                            if let movie = try await item.loadTransferable(type: Movie.self) {
-                                loadedVideos.append(movie.url)
-                            }
-                        } catch {
-                            print("❌ Failed to import video for batch: \(error)")
-                        }
-                    }
-                    projectState.addVideosToBatch(loadedVideos)
-                    videoURLs = Array(Set(videoURLs + loadedVideos))
-                    videoCount = projectState.batchQueue.count
-                }
-            } else {
-                // Handle single video selection
-                guard let item = newItems.first else { return }
-                
-                item.loadTransferable(type: Movie.self) { result in
-                    DispatchQueue.main.async {
-                        switch result {
-                        case .success(let movie?):
-                            let url = movie.url
-                            self.videoURLs = [url]
-                            self.videoCount = 1
-                            // CRITICAL: Update ProjectState with the imported video
-                            self.projectState.addVideoURL(url)
-                            print("✅ Video imported successfully: \(url.lastPathComponent)")
-                        case .failure(let error):
-                            print("❌ Failed to import video: \(error)")
-                        case .success(.none):
-                            print("❌ No video data found")
-                        }
-                    }
-                }
+        .photosPicker(isPresented: $isShowingVideoPicker, selection: $selectedVideoItems,
+                      maxSelectionCount: projectState.batchMode ? 10 : 1, matching: .videos,
+                      preferredItemEncoding: .current)
+        .fileImporter(isPresented: $isShowingVideoFileImporter,
+                      allowedContentTypes: FileImportManager.SupportedVideoTypes.types,
+                      allowsMultipleSelection: projectState.batchMode) { result in
+            switch result {
+            case .success(let urls): importVideoFiles(urls)
+            case .failure(let error): reportImportError(error.localizedDescription)
             }
+        }
+        .alert("Unable to Import Video", isPresented: Binding(
+            get: { importError != nil }, set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: { Text(importError ?? "") }
+        .onChange(of: selectedVideoItems) { _, newItems in
+            guard !newItems.isEmpty, !isExporting else { return }
+            importTask?.cancel()
+            isImportingVideo = true
+            fileImportManager.lastImportStatus = .importing
+            let importingBatch = projectState.batchMode
+            importTask = Task {
+                defer { isImportingVideo = false }
+                var loadedVideos: [URL] = []
+                var failures: [String] = []
+                for item in newItems {
+                    do {
+                        guard let movie = try await item.loadTransferable(type: Movie.self) else {
+                            failures.append("The selected item contains no readable video.")
+                            continue
+                        }
+                        guard !Task.isCancelled else { return }
+                        loadedVideos.append(movie.url)
+                    } catch { failures.append(error.localizedDescription) }
+                }
+                guard !Task.isCancelled else { return }
+                finishVideoImport(loadedVideos, batch: importingBatch)
+                if !failures.isEmpty { reportImportError(failures.joined(separator: "\n")) }
+                selectedVideoItems = []
+            }
+        }
+        .onReceive(exportProcessor.$exportProgress) { progress in
+            guard projectState.isExporting, !projectState.isBatchProcessing else { return }
+            projectState.currentProgress = progress
+            projectState.overallProgress = progress
         }
         // Update ProjectState when LUTs are selected
         .onChange(of: lutManager.selectedPrimaryLUT) { _, newLUT in
@@ -160,9 +162,17 @@ struct ContentView: View {
             }
         }
         // Update video URLs when test video is loaded
-        .onChange(of: projectState.videoURLs) { _, newURLs in
+        .onChange(of: projectState.videoURLs) { oldURLs, newURLs in
+            if oldURLs != newURLs && !projectState.batchMode && !isExporting {
+                clearExportResult()
+            }
             self.videoURLs = newURLs
-            self.videoCount = newURLs.count
+            self.videoCount = projectState.batchMode ? projectState.batchQueue.count : newURLs.count
+        }
+        .onChange(of: projectState.exportConfigurationVersion) { _, _ in
+            // The model has invalidated any batch results; clear only this view's
+            // single-export and Photos-save state, without mutating the model.
+            clearExportResult()
         }
         // Listen for debug export notification
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("DebugTestExport"))) { _ in
@@ -188,9 +198,10 @@ struct ContentView: View {
     private func iPadInterface(geometry: GeometryProxy) -> some View {
         HStack(spacing: 0) {
             // Left Panel - Controls with ultrathin material
-            VStack(spacing: 0) {
+            ScrollView {
                 controlsPanelContent
             }
+            .accessibilityIdentifier("controlsScrollView")
             .frame(width: min(400, geometry.size.width * 0.35))
             .background(
                 .ultraThinMaterial,
@@ -218,6 +229,7 @@ struct ContentView: View {
                 controlsPanelContent
                     .padding(.top)
             }
+            .accessibilityIdentifier("controlsScrollView")
             .frame(maxHeight: .infinity)
             .background(
                 .ultraThinMaterial,
@@ -287,7 +299,9 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "folder.badge.gearshape")
                 }
+                .disabled(controlsLocked)
                 .accessibilityLabel("Project Management")
+                .accessibilityIdentifier("projectManagement")
                 .font(.title2)
                 .foregroundStyle(.blue.gradient)
                 .symbolEffect(.bounce, value: showingProjectManagement)
@@ -325,27 +339,23 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             
             VStack(alignment: .leading) {
-                Picker("Processing Mode", selection: $projectState.batchMode) {
+                Picker("Processing Mode", selection: Binding(
+                    get: { projectState.batchMode }, set: { newValue in
+                        guard !controlsLocked, newValue != projectState.batchMode else { return }
+                        projectState.clearBatchQueue()
+                        projectState.clearVideoURLs()
+                        projectState.batchMode = newValue
+                        videoURLs = []
+                        videoCount = 0
+                        selectedVideoItems = []
+                        clearExportResult()
+                    })) {
                     Text("Single Video").tag(false)
                     Text("Batch Processing").tag(true)
                 }
                 .pickerStyle(SegmentedPickerStyle())
-                .onChange(of: projectState.batchMode) { _, newValue in
-                    print("📦 Processing Mode Changed: \(newValue ? "Batch" : "Single") Processing")
-                    // Clear videos when switching modes to avoid confusion
-                    if newValue {
-                        // Switching to batch mode - clear single video selection
-                        videoURLs = []
-                        videoCount = 0
-                        selectedVideoItems = []
-                    } else {
-                        // Switching to single mode - clear batch queue
-                        projectState.clearBatchQueue()
-                        videoURLs = []
-                        videoCount = 0
-                        selectedVideoItems = []
-                    }
-                }
+                .disabled(controlsLocked)
+
             }
             .padding(16)
             .background(
@@ -365,11 +375,7 @@ struct ContentView: View {
             
             VStack(spacing: 12) {
                 // Video Import Button - Single video only using PhotosPicker
-                PhotosPicker(
-                    selection: $selectedVideoItems,
-                    maxSelectionCount: projectState.batchMode ? 10 : 1,
-                    matching: .videos
-                ) {
+                Button(action: triggerVideoImport) {
                     HStack {
                         VStack(spacing: 8) {
                             Image(systemName: projectState.batchMode ? "square.stack.3d.up.fill" : "video.fill")
@@ -404,7 +410,16 @@ struct ContentView: View {
                         )
                     }
                 }
-                
+                .accessibilityIdentifier("importPhotos")
+
+                Button("Import from Files", systemImage: "folder") {
+                    isShowingVideoFileImporter = true
+                }
+                .disabled(controlsLocked)
+                .accessibilityIdentifier("importFiles")
+
+                if isImportingVideo { ProgressView("Importing video…") }
+
                 // Primary LUT Selection - Now Optional
                 VStack(spacing: 8) {
                     Button {
@@ -442,7 +457,8 @@ struct ContentView: View {
                             )
                         }
                     }
-                    
+                    .accessibilityIdentifier("selectPrimaryLUT")
+
                     // Primary LUT Opacity Slider
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -457,6 +473,8 @@ struct ContentView: View {
                         
                         Slider(value: $projectState.primaryLUTOpacity, in: 0...1)
                             .tint(.green)
+                            .accessibilityLabel("Primary LUT opacity")
+                            .accessibilityIdentifier("primaryOpacity")
                             .disabled(!lutManager.hasSelectedPrimaryLUT)
                     }
                     .padding(.horizontal, 4)
@@ -477,6 +495,8 @@ struct ContentView: View {
                     
                     Slider(value: $projectState.whiteBalanceValue, in: -10...10)
                         .tint(.orange)
+                        .accessibilityLabel("White balance")
+                        .accessibilityIdentifier("whiteBalance")
                 }
                 .padding(.horizontal, 4)
                 
@@ -517,7 +537,8 @@ struct ContentView: View {
                             )
                         }
                     }
-                    
+                    .accessibilityIdentifier("selectSecondaryLUT")
+
                     // Secondary LUT Opacity Slider
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -532,6 +553,8 @@ struct ContentView: View {
                         
                         Slider(value: $projectState.secondLUTOpacity, in: 0...1)
                             .tint(.pink)
+                            .accessibilityLabel("Secondary LUT opacity")
+                            .accessibilityIdentifier("secondaryOpacity")
                             .disabled(!lutManager.hasSelectedSecondaryLUT)
                     }
                     .padding(.horizontal, 4)
@@ -539,6 +562,7 @@ struct ContentView: View {
                 }
             }
         }
+        .disabled(controlsLocked)
         .padding(.horizontal)
         .sheet(isPresented: $fileImportManager.isShowingLUTPicker) {
             LUTSelectorView(
@@ -659,7 +683,9 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .disabled(controlsLocked)
                 .accentColor(.purple)
+                .accessibilityIdentifier("exportQuality")
             }
             .padding(16)
             .background(
@@ -699,10 +725,11 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled((projectState.batchMode ? projectState.batchQueue.isEmpty : videoCount == 0) || isExporting)
+            .disabled((projectState.batchMode ? projectState.batchQueue.isEmpty : videoCount == 0) || controlsLocked)
+            .accessibilityIdentifier("convertVideo")
             
             // Save to Photos Button (shown after export)
-            if showingShareSheet {
+            if showingShareSheet && !projectState.batchMode {
                 Button(action: saveToPhotos) {
                     HStack {
                         Image(systemName: isSavedToPhotos ? "checkmark.circle.fill" : "photo.badge.plus")
@@ -721,10 +748,28 @@ struct ContentView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(isSavedToPhotos)
+                .disabled(isSavedToPhotos || isSavingToPhotos || isExporting)
+                .accessibilityIdentifier("saveVideoToPhotos")
                 .transition(.scale.combined(with: .opacity))
             }
             
+            if let exportedVideoURL, !projectState.batchMode {
+                ShareLink("Share Exported Video", item: exportedVideoURL)
+                    .disabled(isExporting)
+                    .accessibilityIdentifier("shareVideo")
+            }
+            if projectState.batchMode && !projectState.batchExportedVideoURLs.isEmpty && !isExporting {
+                ShareLink("Share Exported Batch", items: projectState.batchExportedVideoURLs)
+                    .accessibilityIdentifier("shareBatch")
+            }
+            if isExporting {
+                Button("Cancel Processing", role: .destructive) {
+                    if projectState.isBatchProcessing { projectState.cancelBatchProcessing() }
+                    else { exportProcessor.cancelProcessing() }
+                }
+                .accessibilityIdentifier("cancelProcessing")
+            }
+
             // Save to Photos Button for Batch Processing (shown after batch processing is complete)
             if projectState.batchMode && !projectState.isBatchProcessing && !projectState.batchExportedVideoURLs.isEmpty {
                 Button(action: saveBatchToPhotos) {
@@ -745,7 +790,8 @@ struct ContentView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(isSavedToPhotos)
+                .disabled(isSavedToPhotos || isSavingToPhotos || isExporting)
+                .accessibilityIdentifier("saveBatchToPhotos")
                 .transition(.scale.combined(with: .opacity))
             }
             
@@ -784,6 +830,7 @@ struct ContentView: View {
             } else {
                 batchQueueContent
             }
+            batchQueueControls
         }
         .padding(16)
         .background(
@@ -836,7 +883,6 @@ struct ContentView: View {
     private var batchQueueContent: some View {
         VStack(spacing: 6) {
             batchQueueList
-            batchQueueControls
         }
     }
     
@@ -887,7 +933,7 @@ struct ContentView: View {
             batchItemProgressIndicator(item: item)
             
             // Remove button (only for pending items)
-            if item.status == .pending && !projectState.isBatchProcessing {
+            if item.status == .pending && !controlsLocked {
                 Button(action: {
                     projectState.removeVideoFromBatch(at: index)
                 }) {
@@ -936,14 +982,12 @@ struct ContentView: View {
     private var batchQueueControls: some View {
         HStack(spacing: 8) {
             Button(action: {
-                // Add more videos to batch
-                selectedVideoItems = []
-                // This will trigger the PhotosPicker
+                triggerVideoImport()
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "plus.circle.fill")
                         .font(.caption)
-                    Text("Add More")
+                    Text(projectState.batchQueue.isEmpty ? "Add Videos" : "Add More")
                         .font(.caption)
                         .fontWeight(.medium)
                 }
@@ -956,10 +1000,11 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(projectState.isBatchProcessing)
-            
+            .disabled(controlsLocked)
+            .accessibilityIdentifier("batchAddVideos")
+
             Spacer()
-            
+
             Button(action: {
                 projectState.clearBatchQueue()
             }) {
@@ -979,7 +1024,7 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(projectState.isBatchProcessing || projectState.batchQueue.isEmpty)
+            .disabled(controlsLocked || projectState.batchQueue.isEmpty)
         }
     }
     
@@ -1019,7 +1064,8 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(getStatusColor())
                     
-                    Text(fileImportManager.lastImportStatus.message)
+                    Text(projectState.batchMode && !projectState.batchProcessingStatus.isEmpty ? projectState.batchProcessingStatus : projectState.statusMessage)
+                        .accessibilityIdentifier("operationStatus")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     
@@ -1169,6 +1215,8 @@ struct ContentView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(controlsLocked)
+        .accessibilityIdentifier("resetAll")
         .transition(.scale.combined(with: .opacity))
     }
     
@@ -1207,11 +1255,84 @@ struct ContentView: View {
     
     // MARK: - Helper Methods
     private func triggerVideoImport() {
-        // This will trigger the PhotosPicker by clearing and setting the selection
+        guard !controlsLocked else { return }
         selectedVideoItems = []
-        // The PhotosPicker will be triggered by the PhotosPicker in the file import section
+        isShowingVideoPicker = true
     }
     
+    private func reportImportError(_ message: String) {
+        importError = message
+        fileImportManager.lastImportStatus = .error(message)
+        projectState.logVideoOperation(message, level: .error)
+    }
+
+    private func finishVideoImport(_ urls: [URL], batch: Bool) {
+        guard !urls.isEmpty else { return }
+        clearExportResult()
+        if batch {
+            projectState.addVideosToBatch(urls)
+        } else if let url = urls.first {
+            projectState.clearVideoURLs()
+            projectState.addVideoURL(url)
+        }
+        videoURLs = projectState.videoURLs
+        videoCount = batch ? projectState.batchQueue.count : videoURLs.count
+        fileImportManager.lastImportStatus = .success("Imported \(urls.count) video(s)")
+        projectState.logVideoOperation("Imported \(urls.count) video(s)", level: .success)
+    }
+
+    private func importVideoFiles(_ urls: [URL]) {
+        guard !controlsLocked else { return }
+        isImportingVideo = true
+        fileImportManager.lastImportStatus = .importing
+        let importingBatch = projectState.batchMode
+        importTask = Task {
+            defer { isImportingVideo = false }
+            var imported: [URL] = []
+            var failures: [String] = []
+            for url in urls {
+                do {
+                    let destination = try await Task.detached(priority: .userInitiated) {
+                        let access = url.startAccessingSecurityScopedResource()
+                        defer { if access { url.stopAccessingSecurityScopedResource() } }
+                        let directory = URL.documentsDirectory.appendingPathComponent("ImportedVideos", isDirectory: true)
+                            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                        let destination = directory.appendingPathComponent(url.lastPathComponent)
+                        do {
+                            try FileManager.default.copyItem(at: url, to: destination)
+                            return destination
+                        } catch {
+                            try? FileManager.default.removeItem(at: directory)
+                            throw error
+                        }
+                    }.value
+                    do {
+                        let tracks = try await AVURLAsset(url: destination).loadTracks(withMediaType: .video)
+                        guard !tracks.isEmpty else {
+                            throw NSError(domain: "VideoImport", code: 1, userInfo: [NSLocalizedDescriptionKey: "The file contains no supported video track."])
+                        }
+                        imported.append(destination)
+                    } catch {
+                        try? FileManager.default.removeItem(at: destination.deletingLastPathComponent())
+                        throw error
+                    }
+                } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+            }
+            finishVideoImport(imported, batch: importingBatch)
+            if !failures.isEmpty { reportImportError(failures.joined(separator: "\n")) }
+        }
+    }
+
+    private func clearExportResult() {
+        isConversionComplete = false
+        showingShareSheet = false
+        exportedVideoURL = nil
+        isSavedToPhotos = false
+        savedBatchURLs = []
+        saveToPhotosMessage = ""
+    }
+
     // MARK: - Debug Mode Methods
     private func autoSelectDebugLUTs() {
         print("🧪 ContentView: Auto-selecting test LUTs...")
@@ -1234,14 +1355,19 @@ struct ContentView: View {
     // MARK: - Export Functionality
     @State private var exportedVideoURL: URL?
     @State private var showingShareSheet = false
-    @State private var isExporting = false
-    @State private var exportProgress: Double = 0.0
-    @State private var exportStatusMessage = ""
+    private var isExporting: Bool { projectState.isExporting || projectState.isBatchProcessing || exportProcessor.isExporting }
+    private var controlsLocked: Bool { isExporting || isImportingVideo || isSavingToPhotos }
+    private var exportProgress: Double { projectState.isBatchProcessing ? projectState.batchProgress : exportProcessor.exportProgress }
+    private var exportStatusMessage: String { projectState.isBatchProcessing ? projectState.batchProcessingStatus : exportProcessor.statusMessage }
     @State private var isConversionComplete = false
     @State private var isSavedToPhotos = false
+    @State private var isSavingToPhotos = false
+    @State private var savedBatchURLs: Set<URL> = []
     @State private var saveToPhotosMessage = ""
     
     private func exportVideo() {
+        guard !controlsLocked else { return }
+        clearExportResult()
         // Check if batch mode is enabled
         if projectState.batchMode {
             // Handle batch processing
@@ -1285,7 +1411,11 @@ struct ContentView: View {
         
         projectState.logGPUOperation("Using GPU acceleration for processing", level: .info)
         
+        projectState.isExporting = true
+        projectState.currentProgress = 0
+        projectState.overallProgress = 0
         Task {
+            defer { projectState.isExporting = false }
             projectState.logExportOperation("Initializing video processor...", level: .info)
             
             // Create output directory
@@ -1293,7 +1423,7 @@ struct ContentView: View {
             let outputDirectory = documentsPath.appendingPathComponent("LUTexport")
             
             let config = VideoProcessor.ProcessingConfig(
-                videoURLs: projectState.videoURLs,
+                videoURLs: [firstVideo],
                 primaryLUTURL: projectState.primaryLUTURL,
                 secondaryLUTURL: projectState.secondaryLUTURL,
                 primaryLUTOpacity: projectState.primaryLUTOpacity,
@@ -1306,170 +1436,95 @@ struct ContentView: View {
             
             projectState.logExportOperation("Configuration created successfully", level: .success)
             
-            let processor = VideoProcessor()
-            await processor.processVideos(config: config)
-            
-            if let result = processor.exportedVideoURLs.first {
+            await exportProcessor.processVideos(config: config)
+
+            if exportProcessor.lastError == nil, let result = exportProcessor.exportedVideoURLs.first {
                 projectState.logExportOperation("Video export completed successfully", level: .success)
                 projectState.logExportOperation("Output file: \(result.lastPathComponent)", level: .success)
                 
                 // Store the result for sharing
                 exportedVideoURL = result
                 showingShareSheet = true
+                isConversionComplete = true
             } else {
-                projectState.logExportOperation("Export failed: No output file generated", level: .error)
+                projectState.logExportOperation(exportProcessor.lastError?.localizedDescription ?? "Export failed: No output file generated", level: .error)
             }
         }
     }
     
     private func saveToPhotos() {
-        guard let videoURL = exportedVideoURL else { return }
-        
-        print("📱 Saving video to Photos...")
-        print("📁 Video URL: \(videoURL.path)")
-        print("📁 File exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
-        
-        // Check if file exists and is readable
+        guard !controlsLocked, !isSavedToPhotos, let videoURL = exportedVideoURL else { return }
         guard FileManager.default.fileExists(atPath: videoURL.path) else {
-            print("❌ Video file does not exist at path: \(videoURL.path)")
-            projectState.updateStatus("Video file not found")
+            saveToPhotosMessage = "The exported video is no longer available. Convert it again before saving."
             return
         }
-        
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            DispatchQueue.main.async {
-                switch status {
-                case .authorized, .limited:
-                    print("✅ Photos access authorized, attempting to save...")
-                    PHPhotoLibrary.shared().performChanges({
-                        PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
-                    }) { success, error in
-                        DispatchQueue.main.async {
-                            if success {
-                                print("✅ Video saved to Photos successfully!")
-                                projectState.updateStatus("Video saved to Photos")
-                                self.isSavedToPhotos = true
-                                self.saveToPhotosMessage = "✅ Video successfully saved to Photos!"
-                            } else {
-                                print("❌ Failed to save video to Photos: \(error?.localizedDescription ?? "Unknown error")")
-                                if let error = error {
-                                    print("❌ Error details: \(error)")
-                                }
-                                projectState.updateStatus("Failed to save to Photos")
-                                self.saveToPhotosMessage = "❌ Failed to save to Photos: \(error?.localizedDescription ?? "Unknown error")"
-                            }
-                        }
-                    }
-                case .denied, .restricted:
-                    print("❌ Photos access denied")
-                    projectState.updateStatus("Photos access denied")
-                    self.saveToPhotosMessage = "❌ Photos access denied. Please enable in Settings."
-                case .notDetermined:
-                    print("❌ Photos access not determined")
-                    projectState.updateStatus("Photos access required")
-                    self.saveToPhotosMessage = "❌ Photos access required. Please grant permission."
-                @unknown default:
-                    print("❌ Unknown Photos authorization status")
-                    projectState.updateStatus("Photos access error")
-                    self.saveToPhotosMessage = "❌ Photos access error occurred."
+        isSavingToPhotos = true
+        Task {
+            defer { isSavingToPhotos = false }
+            let authorization = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            guard authorization == .authorized || authorization == .limited else {
+                saveToPhotosMessage = "Photos access denied. Enable access in Settings to save this video."
+                return
+            }
+            do {
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
                 }
+                isSavedToPhotos = true
+                saveToPhotosMessage = "Video saved to Photos."
+                projectState.updateStatus(saveToPhotosMessage)
+            } catch {
+                saveToPhotosMessage = "Failed to save to Photos: \(error.localizedDescription)"
+                projectState.updateStatus(saveToPhotosMessage)
             }
         }
     }
-    
+
     private func saveBatchToPhotos() {
-        guard !projectState.batchExportedVideoURLs.isEmpty else { return }
-        
-        print("📱 Saving \(projectState.batchExportedVideoURLs.count) videos from batch to Photos...")
-        
-        // Check if all files exist
-        let existingVideoURLs = projectState.batchExportedVideoURLs.filter { videoURL in
-            let exists = FileManager.default.fileExists(atPath: videoURL.path)
-            if !exists {
-                print("❌ Video file does not exist at path: \(videoURL.path)")
+        guard !controlsLocked, !projectState.batchExportedVideoURLs.isEmpty else { return }
+        let allURLs = Set(projectState.batchExportedVideoURLs)
+        let remainingURLs = allURLs.subtracting(savedBatchURLs)
+        guard !remainingURLs.isEmpty else { return }
+        isSavingToPhotos = true
+        Task {
+            defer { isSavingToPhotos = false }
+            let authorization = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            guard authorization == .authorized || authorization == .limited else {
+                saveToPhotosMessage = "Photos access denied. Enable access in Settings to save these videos."
+                return
             }
-            return exists
-        }
-        
-        guard !existingVideoURLs.isEmpty else {
-            print("❌ No valid video files found")
-            projectState.updateStatus("No valid video files found")
-            return
-        }
-        
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            DispatchQueue.main.async {
-                switch status {
-                case .authorized, .limited:
-                    print("✅ Photos access authorized, attempting to save \(existingVideoURLs.count) videos...")
-                    
-                    let totalCount = existingVideoURLs.count
-
-                    Task {
-                        var savedCount = 0
-                        var failedCount = 0
-
-                        for videoURL in existingVideoURLs {
-                            do {
-                                try await PHPhotoLibrary.shared().performChanges {
-                                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
-                                }
-                                savedCount += 1
-                            } catch {
-                                failedCount += 1
-                                print("❌ Failed to save video \(videoURL.lastPathComponent): \(error.localizedDescription)")
-                            }
-                        }
-
-                        await MainActor.run {
-                            if savedCount == totalCount {
-                                print("✅ All \(savedCount) videos saved to Photos successfully!")
-                                projectState.updateStatus("All \(savedCount) videos saved to Photos")
-                                self.isSavedToPhotos = true
-                                self.saveToPhotosMessage = "✅ All \(savedCount) videos successfully saved to Photos!"
-                            } else if savedCount > 0 {
-                                print("⚠️ \(savedCount) of \(totalCount) videos saved to Photos")
-                                projectState.updateStatus("\(savedCount) of \(totalCount) videos saved to Photos")
-                                self.isSavedToPhotos = true
-                                self.saveToPhotosMessage = "⚠️ \(savedCount) of \(totalCount) videos saved to Photos"
-                            } else {
-                                print("❌ Failed to save any videos to Photos")
-                                projectState.updateStatus("Failed to save videos to Photos")
-                                self.saveToPhotosMessage = "❌ Failed to save videos to Photos"
-                            }
-                        }
+            for videoURL in remainingURLs {
+                guard FileManager.default.fileExists(atPath: videoURL.path) else { continue }
+                do {
+                    try await PHPhotoLibrary.shared().performChanges {
+                        PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: videoURL)
                     }
-                    
-                case .denied, .restricted:
-                    print("❌ Photos access denied")
-                    projectState.updateStatus("Photos access denied")
-                    self.saveToPhotosMessage = "❌ Photos access denied. Please enable in Settings."
-                case .notDetermined:
-                    print("❌ Photos access not determined")
-                    projectState.updateStatus("Photos access required")
-                    self.saveToPhotosMessage = "❌ Photos access required. Please grant permission."
-                @unknown default:
-                    print("❌ Unknown Photos authorization status")
-                    projectState.updateStatus("Photos access error")
-                    self.saveToPhotosMessage = "❌ Photos access error occurred."
+                    savedBatchURLs.insert(videoURL)
+                } catch {
+                    projectState.logExportOperation("Unable to save \(videoURL.lastPathComponent): \(error.localizedDescription)", level: .error)
                 }
             }
+            isSavedToPhotos = allURLs.isSubset(of: savedBatchURLs)
+            saveToPhotosMessage = isSavedToPhotos
+                ? "All \(allURLs.count) videos saved to Photos."
+                : "Saved \(savedBatchURLs.intersection(allURLs).count) of \(allURLs.count) videos. Tap Save Batch to retry the remaining videos."
+            projectState.updateStatus(saveToPhotosMessage)
         }
     }
-    
+
     private func resetConversion() {
+        guard !controlsLocked else { return }
         projectState.logVideoOperation("Resetting all app data and selections", level: .info)
         
         // Reset all conversion states
-        isExporting = false
-        exportProgress = 0.0
-        exportStatusMessage = ""
+        exportProcessor.resetProcessor()
         isConversionComplete = false
         showingShareSheet = false
         exportedVideoURL = nil
         isSavedToPhotos = false
         saveToPhotosMessage = ""
-        
+        savedBatchURLs = []
+
         // Clear video and LUT selections
         videoURLs = []
         videoCount = 0

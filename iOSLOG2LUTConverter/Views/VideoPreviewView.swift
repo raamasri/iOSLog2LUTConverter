@@ -17,11 +17,22 @@ struct VideoPreviewView: View {
                 if projectState.showBeforeAfter && projectState.rawPreviewImage != nil && projectState.previewImage != nil {
                     // Before/After comparison view
                     beforeAfterPreviewView(geometry: geometry)
+                        .padding(.top, projectState.beforeAfterMode == .toggle ? 100 : 60)
+                        .padding(.bottom, 130)
                 } else {
                     // Standard single preview view
                     standardPreviewView(geometry: geometry)
                 }
                 
+                if (projectState.isPreviewLoading || projectState.isScrubbing) && projectState.previewImage != nil {
+                    ProgressView("Updating preview…")
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityIdentifier("previewLoading")
+                }
+
                 // Controls overlay
                 previewControlsOverlay
             }
@@ -38,8 +49,11 @@ struct VideoPreviewView: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: geometry.size.width, maxHeight: geometry.size.height)
                     .accessibilityLabel(NSLocalizedString("processed_video_preview", comment: "Accessibility label for processed video preview"))
+                    .accessibilityIdentifier("gradedPreview")
             } else if projectState.isPreviewLoading {
                 loadingView
+            } else if !projectState.videoURLs.isEmpty {
+                previewErrorView
             } else {
                 placeholderView
             }
@@ -71,6 +85,7 @@ struct VideoPreviewView: View {
                         .frame(maxWidth: (geometry.size.width - 2) / 2, maxHeight: geometry.size.height - 40)
                         .clipped()
                         .accessibilityLabel(NSLocalizedString("original_video_before_processing", comment: "Accessibility label for original video"))
+                        .accessibilityIdentifier("comparisonOriginal")
                 }
                 
                 Text(NSLocalizedString("before", comment: "Label for original video"))
@@ -94,6 +109,7 @@ struct VideoPreviewView: View {
                         .frame(maxWidth: (geometry.size.width - 2) / 2, maxHeight: geometry.size.height - 40)
                         .clipped()
                         .accessibilityLabel(NSLocalizedString("video_after_lut_processing", comment: "Accessibility label for processed video"))
+                        .accessibilityIdentifier("comparisonGraded")
                 }
                 
                 Text(NSLocalizedString("after", comment: "Label for processed video"))
@@ -229,6 +245,7 @@ struct VideoPreviewView: View {
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
+                .accessibilityIdentifier("previewLoading")
                 .scaleEffect(1.2)
                 .progressViewStyle(CircularProgressViewStyle(tint: .white))
             
@@ -239,6 +256,30 @@ struct VideoPreviewView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
+    private var previewErrorView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.title)
+                .foregroundStyle(.orange)
+            Text("Preview Unavailable")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(projectState.previewError ?? "The selected video could not be previewed. Retry or choose another video.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.8))
+                .multilineTextAlignment(.center)
+                .lineLimit(4)
+                .accessibilityIdentifier("previewError")
+            Button("Retry Preview") { projectState.generatePreview() }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .accessibilityIdentifier("retryPreview")
+        }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 50)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var placeholderView: some View {
         VStack(spacing: 20) {
             Image(systemName: "video.badge.plus")
@@ -299,7 +340,9 @@ struct VideoPreviewView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                
+                .accessibilityIdentifier("toggleComparison")
+                .disabled(projectState.rawPreviewImage == nil || projectState.previewImage == nil)
+
                 Spacer()
                 
                 // Only show when before/after is enabled and we have both images
@@ -317,6 +360,7 @@ struct VideoPreviewView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .accessibilityIdentifier("comparisonMode")
                     .foregroundStyle(.white)
                     .background(
                         .ultraThinMaterial.opacity(0.8),
@@ -374,12 +418,13 @@ struct VideoPreviewView: View {
                     .font(.caption)
                     .fontWeight(.medium)
                     .foregroundStyle(.white.opacity(0.7))
+                    .accessibilityIdentifier("videoDuration")
             }
             .padding(.horizontal, 4)
             
             // Scrubbing timeline
             VStack(spacing: 8) {
-                if projectState.videoDuration > 0 {
+                if projectState.videoDuration.isFinite && projectState.videoDuration > 0 {
                     Slider(
                         value: Binding(
                             get: { projectState.currentTime },
@@ -400,7 +445,8 @@ struct VideoPreviewView: View {
                             .foregroundStyle(.white.opacity(0.6))
                     }
                     .tint(.blue)
-                    .disabled(projectState.isScrubbing || projectState.isPreviewLoading)
+                    .accessibilityLabel("Video timeline")
+                    .accessibilityIdentifier("videoTimeline")
                     
                     // Loading indicator for scrubbing
                     if projectState.isScrubbing {
@@ -505,27 +551,11 @@ struct VideoPreviewView: View {
         .buttonStyle(.plain)
     }
     
-    // MARK: - Simulation Methods (for demonstration)
-    private func simulateVideoImport() {
-        projectState.isPreviewLoading = true
-        
-        // Simulate loading delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            projectState.isPreviewLoading = false
-            
-                         // Create a placeholder preview image
-             withAnimation(.easeInOut(duration: 0.5)) {
-                 // This will be set by the actual preview generation
-                 projectState.updateStatus("Placeholder preview ready")
-             }
-        }
-    }
-    
     // MARK: - Helper Methods
     private func formatTime(_ seconds: Double) -> String {
         guard seconds.isFinite && !seconds.isNaN else { return "0:00" }
         
-        let totalSeconds = Int(seconds)
+        let totalSeconds = Int(max(0, min(seconds, Double(Int32.max))))
         let minutes = totalSeconds / 60
         let remainingSeconds = totalSeconds % 60
         

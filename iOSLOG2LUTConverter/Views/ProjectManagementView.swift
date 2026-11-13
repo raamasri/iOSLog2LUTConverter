@@ -14,6 +14,7 @@ struct ProjectManagementView: View {
     @State private var showingDeleteConfirmation = false
     @State private var projectToDelete: SavedProject?
     @State private var searchText = ""
+    @FocusState private var searchIsFocused: Bool
     
     var body: some View {
         NavigationStack {
@@ -21,27 +22,54 @@ struct ProjectManagementView: View {
                 // Header
                 headerView
                 
+                if let error = projectManager.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal)
+                }
                 // Tab Picker
                 tabPickerView
-                
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search projects and templates", text: $searchText)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.search)
+                        .focused($searchIsFocused)
+                        .onSubmit { searchIsFocused = false }
+                        .accessibilityIdentifier("projectSearch")
+                    if !searchText.isEmpty {
+                        Button("Clear search", systemImage: "xmark.circle.fill") { searchText = "" }
+                            .labelStyle(.iconOnly)
+                    }
+                }
+                .padding(10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
                 // Content
                 TabView(selection: $selectedTab) {
                     templatesView
                         .tag(0)
+                        .accessibilityHidden(selectedTab != 0)
                     
                     savedProjectsView
                         .tag(1)
+                        .accessibilityHidden(selectedTab != 1)
                     
                     favoritesView
                         .tag(2)
+                        .accessibilityHidden(selectedTab != 2)
                     
                     recentProjectsView
                         .tag(3)
+                        .accessibilityHidden(selectedTab != 3)
                 }
                 .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
             }
             .navigationBarHidden(true)
             .background(Color(.systemGroupedBackground))
+            .disabled(projectManager.isLoading)
+            .overlay { if projectManager.isLoading { ProgressView("Working…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         }
         .sheet(isPresented: $showingSaveDialog) {
             saveProjectDialog
@@ -50,7 +78,7 @@ struct ProjectManagementView: View {
             Button("Delete", role: .destructive) {
                 if let project = projectToDelete {
                     Task {
-                        await projectManager.deleteProject(project)
+                        await projectManager.deleteProject(project, projectState: projectState)
                     }
                 }
             }
@@ -80,7 +108,8 @@ struct ProjectManagementView: View {
                 showingSaveDialog = true
             }
             .foregroundColor(.blue)
-            .disabled(projectState.videoURLs.isEmpty)
+            .disabled(projectState.videoURLs.isEmpty || projectState.isExporting || projectState.isBatchProcessing)
+            .accessibilityIdentifier("saveCurrentProject")
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
@@ -117,6 +146,7 @@ struct ProjectManagementView: View {
                             .animation(.easeInOut(duration: 0.3), value: selectedTab)
                     )
                 }
+                .accessibilityIdentifier("projectTab-\(title)")
             }
         }
         .background(.regularMaterial)
@@ -130,7 +160,7 @@ struct ProjectManagementView: View {
         ScrollView {
             LazyVStack(spacing: 12) {
                 ForEach(ProjectTemplate.TemplateCategory.allCases, id: \.self) { category in
-                    let categoryTemplates = projectManager.projectTemplates.filter { $0.category == category }
+                    let categoryTemplates = projectManager.projectTemplates.filter { $0.category == category && (matchesSearch($0.name) || matchesSearch($0.description)) }
                     
                     if !categoryTemplates.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
@@ -150,7 +180,7 @@ struct ProjectManagementView: View {
             }
             .padding(.vertical)
         }
-        .searchable(text: $searchText, prompt: "Search templates...")
+        .accessibilityIdentifier("projectCatalogScrollView")
     }
     
     // MARK: - Saved Projects View
@@ -182,7 +212,7 @@ struct ProjectManagementView: View {
             .padding(.horizontal)
             .padding(.vertical)
         }
-        .searchable(text: $searchText, prompt: "Search saved projects...")
+        .accessibilityIdentifier("projectCatalogScrollView")
     }
     
     // MARK: - Favorites View
@@ -196,7 +226,7 @@ struct ProjectManagementView: View {
                         description: "Mark projects as favorites to quickly access them here"
                     )
                 } else {
-                    ForEach(projectManager.favoriteProjectsList) { project in
+                    ForEach(projectManager.favoriteProjectsList.filter { matchesSearch($0.name) }) { project in
                         ProjectCard(
                             project: project,
                             isFavorite: true
@@ -214,7 +244,7 @@ struct ProjectManagementView: View {
             .padding(.horizontal)
             .padding(.vertical)
         }
-        .searchable(text: $searchText, prompt: "Search favorite projects...")
+        .accessibilityIdentifier("projectCatalogScrollView")
     }
     
     // MARK: - Recent Projects View
@@ -228,7 +258,7 @@ struct ProjectManagementView: View {
                         description: "Projects you've recently worked on will appear here"
                     )
                 } else {
-                    ForEach(projectManager.recentProjects) { recentItem in
+                    ForEach(projectManager.recentProjects.filter { matchesSearch($0.name) }) { recentItem in
                         if let project = projectManager.savedProjects.first(where: { $0.id == recentItem.projectId }) {
                             RecentProjectCard(
                                 project: project,
@@ -246,13 +276,16 @@ struct ProjectManagementView: View {
             .padding(.horizontal)
             .padding(.vertical)
         }
-        .searchable(text: $searchText, prompt: "Search recent projects...")
+        .accessibilityIdentifier("projectCatalogScrollView")
     }
     
     // MARK: - Save Project Dialog
     private var saveProjectDialog: some View {
         NavigationStack {
             VStack(spacing: 20) {
+                if let error = projectManager.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Project Name")
                         .font(.headline)
@@ -260,6 +293,7 @@ struct ProjectManagementView: View {
                     
                     TextField("Enter project name", text: $newProjectName)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .accessibilityIdentifier("projectName")
                         .autocorrectionDisabled()
                 }
                 
@@ -329,7 +363,8 @@ struct ProjectManagementView: View {
                             }
                         }
                     }
-                    .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(newProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectManager.isLoading)
+                    .accessibilityIdentifier("saveProject")
                 }
             }
         }
@@ -386,6 +421,11 @@ struct ProjectManagementView: View {
         }
     }
     
+    private func matchesSearch(_ value: String) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || value.localizedCaseInsensitiveContains(query)
+    }
+
     // MARK: - Actions
     private func applyTemplate(_ template: ProjectTemplate) {
         Task {
@@ -430,8 +470,9 @@ struct TemplateCard: View {
                 .background(template.category.color.opacity(0.1))
                 .foregroundColor(template.category.color)
                 .clipShape(Capsule())
+                .accessibilityIdentifier("applyTemplate-\(template.name)")
             }
-            
+
             Text(template.name)
                 .font(.headline)
                 .fontWeight(.semibold)
@@ -492,11 +533,15 @@ struct ProjectCard: View {
                         Image(systemName: isFavorite ? "heart.fill" : "heart")
                             .foregroundColor(isFavorite ? .red : .secondary)
                     }
-                    
+                    .accessibilityLabel(isFavorite ? "Remove favorite" : "Add favorite")
+                    .accessibilityIdentifier("favoriteProject-\(project.name)")
+
                     Button(action: onDelete) {
                         Image(systemName: "trash")
                             .foregroundColor(.red)
                     }
+                    .accessibilityLabel("Delete project")
+                    .accessibilityIdentifier("deleteProject-\(project.name)")
                 }
             }
             
@@ -537,6 +582,7 @@ struct ProjectCard: View {
             .background(Color.blue.opacity(0.1))
             .foregroundColor(.blue)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityIdentifier("loadProject-\(project.name)")
         }
         .padding()
         .background(.regularMaterial)

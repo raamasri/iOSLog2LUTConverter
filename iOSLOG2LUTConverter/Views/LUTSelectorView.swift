@@ -6,6 +6,7 @@ struct LUTSelectorView: View {
     @ObservedObject var fileImportManager: FileImportManager
     let isSecondary: Bool
     @Environment(\.dismiss) private var dismiss
+    @State private var importError: String?
     
     // Computed property to get the appropriate LUT collection
     private var lutsByCategory: [LUTManager.LUTCategory: [LUTManager.LUT]] {
@@ -54,25 +55,13 @@ struct LUTSelectorView: View {
                     }
                     #endif
                     
-                    // LUT Categories
-                    ForEach(Array(lutsByCategory.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { category in
-                        LUTCategorySection(
-                            category: category,
-                            luts: lutsByCategory[category] ?? [],
-                            isSecondary: isSecondary,
-                            selectedLUT: isSecondary ? lutManager.selectedSecondaryLUT : lutManager.selectedPrimaryLUT
-                        ) { lut in
-                            if isSecondary {
-                                lutManager.selectSecondaryLUT(lut)
-                                print("🎨 Selected secondary LUT: \(lut.displayName)")
-                            } else {
-                                lutManager.selectPrimaryLUT(lut)
-                                print("📷 Selected primary LUT: \(lut.displayName)")
-                            }
-                            dismiss()
-                        }
+                    Button("None — remove this LUT") {
+                        if isSecondary { lutManager.clearSecondaryLUT() } else { lutManager.clearPrimaryLUT() }
+                        dismiss()
                     }
-                    
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+
                     // Import Custom LUT Button
                     Button {
                         if isSecondary {
@@ -92,7 +81,7 @@ struct LUTSelectorView: View {
                                     .font(.headline)
                                     .foregroundStyle(.primary)
                                 
-                                Text("Browse for .cube, .3dl, or other LUT files")
+                                Text("Browse for a .cube LUT file")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -114,9 +103,30 @@ struct LUTSelectorView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("importCustomLUT")
+
+                    // LUT Categories
+                    ForEach(Array(lutsByCategory.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { category in
+                        LUTCategorySection(
+                            category: category,
+                            luts: lutsByCategory[category] ?? [],
+                            isSecondary: isSecondary,
+                            selectedLUT: isSecondary ? lutManager.selectedSecondaryLUT : lutManager.selectedPrimaryLUT
+                        ) { lut in
+                            if isSecondary {
+                                lutManager.selectSecondaryLUT(lut)
+                                print("🎨 Selected secondary LUT: \(lut.displayName)")
+                            } else {
+                                lutManager.selectPrimaryLUT(lut)
+                                print("📷 Selected primary LUT: \(lut.displayName)")
+                            }
+                            dismiss()
+                        }
+                    }
                 }
                 .padding()
             }
+            .accessibilityIdentifier("lutCatalogScrollView")
             .navigationTitle(isSecondary ? "Secondary LUT" : "Primary LUT")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -136,13 +146,26 @@ struct LUTSelectorView: View {
             switch result {
             case .success(let urls):
                 if let url = urls.first {
-                    lutManager.importCustomLUT(from: url, isSecondary: isSecondary)
-                    print("✅ Successfully imported custom LUT: \(url.lastPathComponent)")
+                    do {
+                        let lut = try lutManager.importCustomLUT(from: url, isSecondary: isSecondary)
+                        fileImportManager.lastImportStatus = .success("Imported \(lut.displayName)")
+                        dismiss()
+                    } catch {
+                        importError = error.localizedDescription
+                        fileImportManager.lastImportStatus = .error(error.localizedDescription)
+                    }
                 }
             case .failure(let error):
                 fileImportManager.lastImportStatus = .error("Failed to import LUT: \(error.localizedDescription)")
                 print("❌ Failed to import custom LUT: \(error.localizedDescription)")
             }
+        }
+        .alert("Unable to Import LUT", isPresented: Binding(
+            get: { importError != nil }, set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "")
         }
     }
 }
@@ -261,6 +284,7 @@ struct LUTCard: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("lut-\(lut.isBuiltIn ? "builtin" : "custom")-\(lut.name)")
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
     }
 } 

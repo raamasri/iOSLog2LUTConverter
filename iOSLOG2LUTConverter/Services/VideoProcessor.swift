@@ -19,9 +19,12 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - Private Properties
     private let lutProcessor = LUTProcessor()
-    private let sharedCIContext = CIContext()
+    private let sharedCIContext = CIContext(options: [.workingColorSpace: NSNull(), .cacheIntermediates: false])
     private var cancellables = Set<AnyCancellable>()
     private var startTime: Date?
+    private var cancellationRequested = false
+    private var completedVideos = 0
+    private var activeProcessingTask: Task<Void, Error>?
     
     // MARK: - Processing Configuration
     struct ProcessingConfig {
@@ -68,29 +71,25 @@ class VideoProcessor: ObservableObject {
     private func setupSubscriptions() {
         // Subscribe to LUT processor updates
         lutProcessor.$processingProgress
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] progress in
-                self?.updateOverallProgress(lutProgress: progress)
+                guard let self, self.isExporting else { return }
+                self.updateOverallProgress(lutProgress: progress)
             }
             .store(in: &cancellables)
         
         lutProcessor.$processingStatus
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
-                self?.statusMessage = status
+                guard let self, self.isExporting else { return }
+                self.statusMessage = status
             }
             .store(in: &cancellables)
     }
     
     // MARK: - Main Processing Method
     func processVideos(config: ProcessingConfig) async {
+        guard !isExporting else { return }
         guard !config.videoURLs.isEmpty else {
             await handleError(.noVideosSelected)
-            return
-        }
-        
-        guard config.primaryLUTURL != nil || config.secondaryLUTURL != nil else {
-            await handleError(.noLUTSelected)
             return
         }
         
@@ -99,13 +98,34 @@ class VideoProcessor: ObservableObject {
     
     private func startProcessing(config: ProcessingConfig) async {
         isExporting = true
+        cancellationRequested = false
+        completedVideos = 0
         exportProgress = 0.0
         currentVideoIndex = 0
         totalVideos = config.videoURLs.count
         exportedVideoURLs = []
         lastError = nil
         startTime = Date()
-        
+
+        // Keep foreground exports awake and ask iOS for its finite grace period if
+        // the user switches apps. Expiration cancels the writer and cleans partials.
+        let application = UIApplication.shared
+        let previousIdleTimerSetting = application.isIdleTimerDisabled
+        application.isIdleTimerDisabled = true
+        let backgroundTask = application.beginBackgroundTask(withName: "VideoLUTExport") { [weak self] in
+            Task { @MainActor in self?.cancelProcessing() }
+        }
+        defer {
+            application.isIdleTimerDisabled = previousIdleTimerSetting
+            if backgroundTask != .invalid { application.endBackgroundTask(backgroundTask) }
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: config.outputDirectory, withIntermediateDirectories: true)
+        } catch {
+            await handleError(.exportFailed(error.localizedDescription))
+            return
+        }
         updateStatus("Starting video processing...")
         
         // Create LUT settings
@@ -121,7 +141,7 @@ class VideoProcessor: ObservableObject {
         
         // Process each video
         for (index, videoURL) in config.videoURLs.enumerated() {
-            guard isExporting else { // Check if cancelled
+            guard !cancellationRequested, !Task.isCancelled else {
                 await handleError(.cancelled)
                 return
             }
@@ -131,34 +151,47 @@ class VideoProcessor: ObservableObject {
             
             do {
                 let outputURL = generateOutputURL(for: videoURL, in: config.outputDirectory, settings: lutSettings)
-                
-                // CRITICAL: Remove any existing file first to avoid false positives
-                if FileManager.default.fileExists(atPath: outputURL.path) {
-                    try FileManager.default.removeItem(at: outputURL)
-                    print("🗑️ Removed existing file before processing: \(outputURL.lastPathComponent)")
-                }
-                
-                try await lutProcessor.processVideo(videoURL, settings: lutSettings, outputURL: outputURL)
-                
-                // CRITICAL: Verify the file was actually created and has reasonable size
+                var registeredOutput = false
+                defer { if !registeredOutput { try? FileManager.default.removeItem(at: outputURL) } }
+
+                let task = Task { try await self.lutProcessor.processVideo(videoURL, settings: lutSettings, outputURL: outputURL) }
+                activeProcessingTask = task
+                defer { activeProcessingTask = nil }
+                try await withTaskCancellationHandler {
+                    try await task.value
+                } onCancel: { task.cancel() }
+
+                guard !cancellationRequested, !Task.isCancelled else { throw CancellationError() }
+                // Verify a completed export exists before presenting it to the user.
                 guard FileManager.default.fileExists(atPath: outputURL.path) else {
                     throw ProcessingError.exportFailed("Output file was not created")
                 }
                 
                 let fileAttributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
-                let fileSize = fileAttributes[.size] as? Int64 ?? 0
-                
-                if fileSize < 1024 { // Less than 1KB indicates failure
-                    throw ProcessingError.exportFailed("Output file is too small (\(fileSize) bytes), indicating processing failure")
+                let fileSize = (fileAttributes[.size] as? NSNumber)?.int64Value ?? 0
+                guard fileSize > 0 else { throw ProcessingError.exportFailed("The output file is empty") }
+                let outputAsset = AVURLAsset(url: outputURL)
+                let playable = try await outputAsset.load(.isPlayable)
+                let videoTracks = try await outputAsset.loadTracks(withMediaType: .video)
+                let duration = try await outputAsset.load(.duration).seconds
+                guard playable, !videoTracks.isEmpty, duration.isFinite, duration > 0 else {
+                    throw ProcessingError.exportFailed("The output file does not contain playable video")
                 }
-                
+                guard !cancellationRequested, !Task.isCancelled else { throw CancellationError() }
+
                 print("✅ Successfully processed video: \(outputURL.lastPathComponent) (Size: \(fileSize) bytes)")
                 exportedVideoURLs.append(outputURL)
-                updateOverallProgress(videoIndex: index + 1)
+                registeredOutput = true
+                completedVideos = index + 1
+                updateOverallProgress(videoIndex: completedVideos)
                 
             } catch {
                 print("❌ VideoProcessor: Processing failed for video \(index + 1): \(error.localizedDescription)")
-                await handleError(.processingFailed(error.localizedDescription))
+                if error is CancellationError || cancellationRequested || Task.isCancelled {
+                    await handleError(.cancelled)
+                } else {
+                    await handleError(.processingFailed(error.localizedDescription))
+                }
                 return
             }
         }
@@ -169,10 +202,9 @@ class VideoProcessor: ObservableObject {
     // MARK: - Progress Management
     private func updateOverallProgress(videoIndex: Int? = nil, lutProgress: Double = 0.0) {
         guard totalVideos > 0 else { return }
-        let videoProgress = Double(videoIndex ?? currentVideoIndex) / Double(totalVideos)
-        let currentVideoProgress = lutProgress / Double(totalVideos)
-        
-        exportProgress = min(1.0, videoProgress + currentVideoProgress)
+        let finished = videoIndex ?? completedVideos
+        let fraction = lutProgress.isFinite ? min(1, max(0, lutProgress)) : 0
+        exportProgress = max(exportProgress, min(1, (Double(finished) + fraction) / Double(totalVideos)))
         
         // Update estimated time remaining
         if let startTime = startTime, exportProgress > 0 {
@@ -189,16 +221,11 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - File Management
     private func generateOutputURL(for videoURL: URL, in directory: URL, settings: LUTProcessor.LUTSettings) -> URL {
-        let filename = videoURL.deletingPathExtension().lastPathComponent
-        let primaryLUTName = settings.primaryLUTURL?.deletingPathExtension().lastPathComponent ?? "NoLUT"
-        let secondaryLUTName = settings.secondaryLUTURL?.deletingPathExtension().lastPathComponent ?? "NoSecondLUT"
-        let opacityPercent = Int(settings.secondaryLUTOpacity * 100)
-        
-        let outputFilename = "\(filename)_\(primaryLUTName)_\(secondaryLUTName)_\(opacityPercent)percent.mp4"
-        
-        return directory.appendingPathComponent(outputFilename)
+        // A unique destination protects earlier exports and duplicate source filenames.
+        let filename = String(decoding: videoURL.deletingPathExtension().lastPathComponent.utf8.prefix(100), as: UTF8.self)
+        return directory.appendingPathComponent("\(filename)_graded_\(UUID().uuidString).mp4")
     }
-    
+
     private func getDocumentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
@@ -264,13 +291,11 @@ class VideoProcessor: ObservableObject {
     func cancelProcessing() {
         guard isExporting else { return }
         
-        isExporting = false
-        updateStatus("Cancelling processing...")
-        
-        // Clean up any in-progress exports
-        Task {
-            await handleError(.cancelled)
-        }
+        cancellationRequested = true
+        activeProcessingTask?.cancel()
+        lutProcessor.cancelProcessing()
+        updateStatus("Cancelling processing…")
+        // Keep isExporting true until the active writer has stopped and removed its partial file.
     }
     
     // MARK: - Error Handling
@@ -288,6 +313,7 @@ class VideoProcessor: ObservableObject {
     // MARK: - Completion
     private func finishProcessing() async {
         isExporting = false
+        estimatedTimeRemaining = 0
         exportProgress = 1.0
         
         let processingTime = startTime.map { Date().timeIntervalSince($0) } ?? 0
@@ -305,6 +331,11 @@ class VideoProcessor: ObservableObject {
     
     // MARK: - Utility Methods
     func resetProcessor() {
+        if isExporting {
+            cancelProcessing()
+            return
+        }
+        completedVideos = 0
         isExporting = false
         exportProgress = 0.0
         currentVideoIndex = 0
@@ -377,11 +408,6 @@ class VideoProcessor: ObservableObject {
                                   mediaSubType & 0xFF)
                 print("   - Codec: \(fourCC)")
                 
-                // Check processing requirements
-                analyzeProcessingRequirements(formatDesc, resolution: naturalSize)
-                
-                // Recommend processing settings
-                recommendProcessingSettings(formatDesc, frameRate: nominalFrameRate)
             }
             
         } catch {
@@ -389,106 +415,4 @@ class VideoProcessor: ObservableObject {
         }
     }
     
-    private func analyzeProcessingRequirements(_ formatDesc: CMFormatDescription, resolution: CGSize) {
-        print("⚙️ Processing Requirements Analysis:")
-        
-        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
-        
-        // Check for 10-bit processing requirements
-        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
-                     pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
-                     pixelFormat == kCVPixelFormatType_422YpCbCr10 ||
-                     pixelFormat == kCVPixelFormatType_444YpCbCr10
-        
-        if is10Bit {
-            print("   - 10-bit Processing: ✅ Required")
-            print("   - Memory Usage: ⚠️ High (10-bit pipeline)")
-            print("   - GPU Acceleration: ✅ Highly recommended")
-        } else {
-            print("   - 10-bit Processing: ❌ Not required (8-bit)")
-            print("   - Memory Usage: ✅ Standard")
-            print("   - GPU Acceleration: ⚠️ Optional")
-        }
-        
-        // Check resolution impact
-        let pixelCount = resolution.width * resolution.height
-        if pixelCount >= 3840 * 2160 { // 4K
-            print("   - Resolution Impact: ⚠️ 4K - High processing load")
-            print("   - Recommended: GPU processing + high memory")
-        } else if pixelCount >= 1920 * 1080 { // 1080p
-            print("   - Resolution Impact: ⚠️ 1080p - Moderate processing load")
-        } else {
-            print("   - Resolution Impact: ✅ Lower resolution - Light processing load")
-        }
-        
-        // Check for HDR processing requirements
-        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
-            let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
-            let transferFunction = extensions[kCVImageBufferTransferFunctionKey as String] as? String
-            
-            let isHDR = transferFunction == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) ||
-                       transferFunction == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
-            
-            let isWideGamut = colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) ||
-                             colorPrimaries == (kCVImageBufferColorPrimaries_P3_D65 as String)
-            
-            if isHDR {
-                print("   - HDR Processing: ✅ Required")
-                print("   - Color Management: ✅ Critical")
-            }
-            
-            if isWideGamut {
-                print("   - Wide Gamut: ✅ Detected")
-                print("   - Color Accuracy: ✅ High precision required")
-            }
-        }
-    }
-    
-    private func recommendProcessingSettings(_ formatDesc: CMFormatDescription, frameRate: Float) {
-        print("💡 Processing Recommendations:")
-        
-        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
-        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
-                     pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
-                     pixelFormat == kCVPixelFormatType_422YpCbCr10 ||
-                     pixelFormat == kCVPixelFormatType_444YpCbCr10
-        
-        // GPU vs CPU recommendation
-        if is10Bit {
-            print("   - Processing Mode: ✅ GPU (Essential for 10-bit)")
-        } else {
-            print("   - Processing Mode: ⚠️ GPU recommended, CPU acceptable")
-        }
-        
-        // Quality settings recommendation
-        if is10Bit {
-            print("   - Export Quality: ✅ High or Maximum (preserve 10-bit)")
-        } else {
-            print("   - Export Quality: ⚠️ Medium or High")
-        }
-        
-        // Frame rate considerations
-        if frameRate >= 60 {
-            print("   - Frame Rate: ⚠️ High (\(frameRate) fps) - Extended processing time")
-        } else if frameRate >= 30 {
-            print("   - Frame Rate: ✅ Standard (\(frameRate) fps)")
-        } else {
-            print("   - Frame Rate: ✅ Cinema (\(frameRate) fps)")
-        }
-        
-        // Memory recommendations
-        if is10Bit {
-            print("   - Memory: ⚠️ Ensure sufficient RAM for 10-bit pipeline")
-        }
-        
-        // Check for Apple Log specific recommendations
-        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
-            let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
-            
-            if is10Bit && colorPrimaries != nil {
-                print("   - Apple Log: ✅ Use AppleLogToRec709 LUT for best results")
-                print("   - Color Grading: ✅ Apply secondary LUTs after log conversion")
-            }
-        }
-    }
-} 
+}

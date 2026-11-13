@@ -1,0 +1,27 @@
+{
+  "ffmpeg_version": "9.0.2",
+  "source_commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+  "license": "LGPL-2.1-or-later",
+  "network": false,
+  "gpl": false,
+  "nonfree": false,
+  "video_decoders": [
+    "h264"
+  ],
+  "demuxers": [
+    "mov"
+  ],
+  "protocols": [
+    "file"
+  ],
+  "slices": {
+    "FFmpegMinimal.xcframework/ios-arm64/libFFmpegMinimal.a": {
+      "sha256": "d0d30bdf761c3a60cda48830c65372e1c352b4dee2aee6df1ee0a36fd0082f1a",
+      "bytes": 3898360
+    },
+    "FFmpegMinimal.xcframework/ios-arm64-simulator/libFFmpegMinimal.a": {
+      "sha256": "5dd534a75a1820b1039d4286fa37fe86b0a9a406df39c179781d7eff470e0f6f",
+      "bytes": 3895688
+    }
+  }
+}

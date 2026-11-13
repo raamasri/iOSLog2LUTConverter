@@ -52,7 +52,7 @@
 "quality_low" = "Low (720p)";
 "quality_medium" = "Medium (1080p)";
 "quality_high" = "High (Original)";
-"quality_maximum" = "Maximum (Uncompressed)";
+"quality_maximum" = "Maximum (10-bit HEVC)";
 
 // MARK: - Reset and Clear
 "reset" = "Reset";

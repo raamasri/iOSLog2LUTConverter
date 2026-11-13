@@ -7,7 +7,7 @@ class LUTManager: ObservableObject {
     
     // MARK: - LUT Data Model
     struct LUT: Identifiable, Hashable {
-        let id = UUID()
+        var id: String { "\(isSecondary ? "secondary" : "primary"):\(url.standardizedFileURL.path)" }
         let name: String
         let displayName: String
         let description: String
@@ -68,16 +68,25 @@ class LUTManager: ObservableObject {
     @Published var selectedPrimaryLUT: LUT?
     @Published var selectedSecondaryLUT: LUT?
     @Published var isLoading = false
+    private var builtInLUTLoadTask: Task<Void, Never>?
     
     // MARK: - Computed Properties
     var primaryLutsByCategory: [LUTCategory: [LUT]] {
-        Dictionary(grouping: primaryLUTs, by: { $0.category })
+        Dictionary(grouping: catalogIncludingSelection(primaryLUTs + customLUTs.filter { !$0.isSecondary }, selected: selectedPrimaryLUT), by: { $0.category })
     }
     
     var secondaryLutsByCategory: [LUTCategory: [LUT]] {
-        Dictionary(grouping: secondaryLUTs + customLUTs.filter { $0.isSecondary }, by: { $0.category })
+        Dictionary(grouping: catalogIncludingSelection(secondaryLUTs + customLUTs.filter { $0.isSecondary }, selected: selectedSecondaryLUT), by: { $0.category })
     }
     
+    private func catalogIncludingSelection(_ catalog: [LUT], selected: LUT?) -> [LUT] {
+        // Saved projects own exact copies of their LUTs. Surface the active copy
+        // in the selector without importing it into the global library or changing
+        // its URL; clearing the selection also removes this temporary catalog row.
+        guard let selected, !catalog.contains(where: { $0.id == selected.id }) else { return catalog }
+        return catalog + [selected]
+    }
+
     var hasSelectedPrimaryLUT: Bool {
         selectedPrimaryLUT != nil
     }
@@ -89,24 +98,28 @@ class LUTManager: ObservableObject {
     // MARK: - Initialization
     init() {
         loadBuiltInLUTs()
+        loadCustomLUTs()
     }
     
     // MARK: - LUT Loading
-    func loadBuiltInLUTs() {
+    @discardableResult
+    func loadBuiltInLUTs() -> Task<Void, Never> {
+        if let builtInLUTLoadTask { return builtInLUTLoadTask }
         isLoading = true
-        
-        Task.detached(priority: .background) { [self] in
-            let primaryLUTs = self.loadPrimaryLUTs()
-            let secondaryLUTs = self.loadSecondaryLUTs()
-            
+        let task = Task.detached(priority: .userInitiated) { [self] in
+            let primary = self.loadPrimaryLUTs()
+            let secondary = self.loadSecondaryLUTs()
             await MainActor.run {
-                self.primaryLUTs = primaryLUTs
-                self.secondaryLUTs = secondaryLUTs
+                self.primaryLUTs = primary
+                self.secondaryLUTs = secondary
                 self.isLoading = false
+                self.builtInLUTLoadTask = nil
             }
         }
+        builtInLUTLoadTask = task
+        return task
     }
-    
+
     nonisolated private func loadPrimaryLUTs() -> [LUT] {
         print("🔍 Loading Primary LUTs from app bundle...")
         
@@ -217,14 +230,13 @@ class LUTManager: ObservableObject {
         let lut = LUT(
             name: fileName,
             displayName: formatLUTName(fileName),
-            description: generateLUTDescription(fileName),
+            description: generateLUTDescription(fileName, isSecondary: false),
             category: categorizePrimaryLUT(fileName),
             url: url,
             isBuiltIn: true,
             isSecondary: false
         )
         
-        print("✅ Created primary LUT: \(lut.displayName) (\(lut.category.rawValue))")
         return lut
     }
     
@@ -234,14 +246,13 @@ class LUTManager: ObservableObject {
         let lut = LUT(
             name: fileName,
             displayName: formatLUTName(fileName),
-            description: generateLUTDescription(fileName),
+            description: generateLUTDescription(fileName, isSecondary: true),
             category: categorizeSecondaryLUT(fileName),
             url: url,
             isBuiltIn: true,
             isSecondary: true
         )
         
-        print("✅ Created secondary LUT: \(lut.displayName) (\(lut.category.rawValue))")
         return lut
     }
     
@@ -251,10 +262,10 @@ class LUTManager: ObservableObject {
         
         if name.contains("apple") {
             return .appleLog
+        } else if name.contains("slog3") || name.contains("sgamut3") {
+            return .sonyS_Log3
         } else if name.contains("slog2") {
             return .sonyS_Log2
-        } else if name.contains("slog3") {
-            return .sonyS_Log3
         } else {
             return .custom
         }
@@ -299,7 +310,7 @@ class LUTManager: ObservableObject {
     
     // MARK: - LUT Name Formatting
     nonisolated private func formatLUTName(_ fileName: String) -> String {
-        let nameWithoutExtension = fileName.replacingOccurrences(of: ".cube", with: "")
+        let nameWithoutExtension = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         
         // Special formatting for common patterns
         let formatted = nameWithoutExtension
@@ -310,13 +321,13 @@ class LUTManager: ObservableObject {
         return formatted.trimmingCharacters(in: .whitespaces)
     }
     
-    nonisolated private func generateLUTDescription(_ fileName: String) -> String {
-        let category = fileName.contains("Secondary") ? 
+    nonisolated private func generateLUTDescription(_ fileName: String, isSecondary: Bool) -> String {
+        let category = isSecondary ?
             categorizeSecondaryLUT(fileName) : categorizePrimaryLUT(fileName)
         
         switch category {
         case .appleLog:
-            return "Apple Log to Rec.709 conversion"
+            return fileName.lowercased().contains("tolin") ? "Apple Log to linear conversion" : "Apple Log to Rec.709 conversion"
         case .sonyS_Log2:
             return "Sony S-Log2 to Rec.709 conversion"
         case .sonyS_Log3:
@@ -352,9 +363,57 @@ class LUTManager: ObservableObject {
     }
     
     // MARK: - Custom LUT Import
-    func importCustomLUT(from url: URL, isSecondary: Bool = false) {
-        // Implementation for custom LUT import
-        // This would copy the file to app documents and add to customLUTs array
-        print("📥 Importing custom LUT: \(url.lastPathComponent)")
+    @discardableResult
+    func importCustomLUT(from url: URL, isSecondary: Bool = false) throws -> LUT {
+        let hasAccess = url.startAccessingSecurityScopedResource()
+        defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+
+        // Validate before persisting or selecting the file so unsupported/invalid
+        // imports cannot silently replace a working grade.
+        _ = try LUTParsingUtils.parseLUTFile(url)
+        let directory = customLUTDirectory(isSecondary: isSecondary)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = url.deletingPathExtension().lastPathComponent
+        var destination = directory.appendingPathComponent(name).appendingPathExtension("cube")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: destination.path) && destination != url {
+            destination = directory.appendingPathComponent("\(name) \(suffix)").appendingPathExtension("cube")
+            suffix += 1
+        }
+        if destination != url {
+            do {
+                try FileManager.default.copyItem(at: url, to: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+        }
+        let lut = makeCustomLUT(url: destination, isSecondary: isSecondary)
+        if !customLUTs.contains(where: { $0.url == destination }) {
+            customLUTs.append(lut)
+        }
+        if isSecondary { selectedSecondaryLUT = lut } else { selectedPrimaryLUT = lut }
+        return lut
     }
-} 
+
+    private func customLUTDirectory(isSecondary: Bool) -> URL {
+        URL.documentsDirectory.appendingPathComponent("CustomLUTs", isDirectory: true)
+            .appendingPathComponent(isSecondary ? "Secondary" : "Primary", isDirectory: true)
+    }
+
+    private func makeCustomLUT(url: URL, isSecondary: Bool) -> LUT {
+        LUT(name: url.lastPathComponent, displayName: formatLUTName(url.lastPathComponent),
+            description: "Custom LUT", category: .custom, url: url,
+            isBuiltIn: false, isSecondary: isSecondary)
+    }
+
+    private func loadCustomLUTs() {
+        customLUTs = [false, true].flatMap { isSecondary in
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: customLUTDirectory(isSecondary: isSecondary), includingPropertiesForKeys: nil)) ?? []
+            return files.filter { $0.pathExtension.lowercased() == "cube" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                .map { makeCustomLUT(url: $0, isSecondary: isSecondary) }
+        }
+    }
+}

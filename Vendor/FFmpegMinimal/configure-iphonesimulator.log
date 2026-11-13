@@ -1,0 +1,75 @@
+install prefix            /var/folders/vn/xrg9p00546138kcs3f3btc600000gn/T//ioslut-ffmpeg-minimal-9.0.2/iphonesimulator/install
+source path               /var/folders/vn/xrg9p00546138kcs3f3btc600000gn/T/ioslut-ffmpeg-minimal-9.0.2/ffmpeg-9.0.2
+C compiler                /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+C library
+host C compiler           gcc
+host C library
+ARCH                      aarch64 (generic)
+big-endian                no
+runtime cpu detection     yes
+NEON enabled              yes
+DOTPROD enabled           yes
+I8MM enabled              yes
+PMULL enabled             yes
+EOR3 enabled              yes
+SVE enabled               yes
+SVE2 enabled              yes
+SME enabled               yes
+SME-I16I64 enabled        yes
+SME2 enabled              yes
+debug symbols             no
+strip symbols             yes
+optimize for size         yes
+optimizations             yes
+static                    yes
+shared                    no
+network support           no
+threading support         pthreads
+safe bitstream reader     yes
+texi2html enabled         no
+perl enabled              yes
+pod2man enabled           yes
+makeinfo enabled          no
+makeinfo supports HTML    no
+experimental features     yes
+xmllint enabled           yes
+
+External libraries:
+
+External libraries providing hardware acceleration:
+
+Libraries:
+avcodec                 avutil
+avformat                swscale
+
+Programs:
+
+Enabled decoders:
+h264
+
+Enabled encoders:
+
+Enabled hwaccels:
+
+Enabled parsers:
+h264
+
+Enabled demuxers:
+mov
+
+Enabled muxers:
+
+Enabled protocols:
+file
+
+Enabled filters:
+
+Enabled bsfs:
+
+Enabled indevs:
+
+Enabled outdevs:
+
+License: LGPL version 2.1 or later
+
+WARNING: pkg-config not found, library detection may fail.

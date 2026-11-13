@@ -9,25 +9,43 @@ import UIKit
 class ProjectState: ObservableObject {
     
     // MARK: - Core Properties (Migrated from macOS)
-    @Published var videoURLs: [URL] = []
-    @Published var primaryLUTURL: URL?
-    @Published var secondaryLUTURL: URL?
-    @Published var primaryLUTOpacity: Float = 1.0
-    @Published var secondLUTOpacity: Float = 1.0
-    @Published var whiteBalanceValue: Float = 0.0
+    @Published var videoURLs: [URL] = [] {
+        didSet { if !batchMode, videoURLs != oldValue { invalidateCompletedExports() } }
+    }
+    @Published var primaryLUTURL: URL? {
+        didSet { if primaryLUTURL != oldValue { invalidateCompletedExports() } }
+    }
+    @Published var secondaryLUTURL: URL? {
+        didSet { if secondaryLUTURL != oldValue { invalidateCompletedExports() } }
+    }
+    @Published var primaryLUTOpacity: Float = 1.0 {
+        didSet { if primaryLUTOpacity != oldValue { invalidateCompletedExports() } }
+    }
+    @Published var secondLUTOpacity: Float = 1.0 {
+        didSet { if secondLUTOpacity != oldValue { invalidateCompletedExports() } }
+    }
+    @Published var whiteBalanceValue: Float = 0.0 {
+        didSet { if whiteBalanceValue != oldValue { invalidateCompletedExports() } }
+    }
     
     // GPU processing is always enabled (no user toggle)
     var useGPU: Bool { return true }
     
+    /// A completed export describes one exact media/grade configuration.
+    @Published private(set) var exportConfigurationVersion: Int = 0
+
     // MARK: - iOS-Specific Properties
     @Published var isExporting: Bool = false
     @Published var currentProgress: Double = 0.0
     @Published var overallProgress: Double = 0.0
-    @Published var exportQuality: ExportQuality = .high
+    @Published var exportQuality: ExportQuality = .high {
+        didSet { if exportQuality != oldValue { invalidateCompletedExports() } }
+    }
     @Published var shouldOptimizeForBattery: Bool = true
     @Published var isPreviewLoading: Bool = false
     @Published var previewImage: UIImage?
     @Published var rawPreviewImage: UIImage? // Raw preview without LUTs
+    @Published var previewError: String?
     @Published var statusMessage: String = "Ready to import videos"
     
     // MARK: - Verbose Logging Properties
@@ -140,7 +158,7 @@ class ProjectState: ObservableObject {
         var displayName: String {
             switch self {
             case .sideBySide: return "Side by Side"
-            case .verticalSplit: return "Vertical Split"
+            case .verticalSplit: return "Top/Bottom Split"
             case .toggle: return "A/B Toggle"
             }
         }
@@ -166,6 +184,12 @@ class ProjectState: ObservableObject {
     
     // MARK: - Service Dependencies
     private let videoProcessor = VideoProcessor()
+    private let previewProcessor = VideoProcessor()
+    private var previewTask: Task<Void, Never>?
+    private var durationTask: Task<Void, Never>?
+    private var previewGeneration = UUID()
+    private var batchCancellationRequested = false
+    private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Verbose Logging Methods
     func log(_ message: String, level: LogEntry.LogLevel = .info, category: LogEntry.LogCategory = .system) {
@@ -222,63 +246,30 @@ class ProjectState: ObservableObject {
     }
     
     func enableDebugMode() {
-        print("🧪 Debug Mode: Initializing test environment...")
+        guard !isExporting, !isBatchProcessing else { return }
         isDebugMode = true
-        
-        // Load test video from Resources/testfootage/
-        loadTestVideo()
-        
-        // Auto-select first primary and secondary LUTs
-        autoSelectTestLUTs()
-        
-        updateStatus("Debug mode: Test video and LUTs loaded")
-        print("🧪 Debug Mode: Environment ready for testing")
-    }
-    
-    private func loadTestVideo() {
-        // Try Apple Log test video first (primary test video)
-        if let bundleURL = Bundle.main.url(forResource: "applelogtest", withExtension: "mov", subdirectory: "Resources/testfootage") {
-            print("✅ Debug Mode: Loading Apple Log test video from bundle: \(bundleURL.path)")
-            addVideoURL(bundleURL)
-            return
+        let candidates = [("applelogtest", "mov"), ("test_compatible", "mp4"), ("test", "MP4"), ("test", "mp4")]
+        for (name, ext) in candidates {
+            let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Resources/testfootage")
+                ?? Bundle.main.url(forResource: name, withExtension: ext)
+            if let url {
+                addVideoURL(url)
+                updateStatus("Debug mode: loaded \(url.lastPathComponent)")
+                return
+            }
         }
-        
-        // Fallback to compatible test video (iOS-friendly 8-bit H.264)
-        if let bundleURL = Bundle.main.url(forResource: "test_compatible", withExtension: "mp4", subdirectory: "Resources/testfootage") {
-            print("✅ Debug Mode: Loading compatible test video from bundle: \(bundleURL.path)")
-            addVideoURL(bundleURL)
-            return
-        }
-        
-        // Fallback to original test video
-        if let bundleURL = Bundle.main.url(forResource: "test", withExtension: "MP4", subdirectory: "Resources/testfootage") ??
-                          Bundle.main.url(forResource: "test", withExtension: "mp4", subdirectory: "Resources/testfootage") {
-            print("⚠️ Debug Mode: Loading original test video from bundle: \(bundleURL.path)")
-            addVideoURL(bundleURL)
-            return
-        }
-        
-        print("❌ Debug Mode: No test video found in bundle")
-        print("❌ Tried: applelogtest.mov")
-        print("❌ Tried: test_compatible.mp4")
-        print("❌ Tried: test.MP4")
-    }
-    
-    private func autoSelectTestLUTs() {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            self?.autoSelectLUTsIfAvailable()
+        if videoURLs.isEmpty {
+            log("Debug mode enabled. No test footage is bundled; import a video to continue.", level: .warning, category: .debug)
+        } else {
+            log("Debug mode enabled using the current video.", category: .debug)
         }
     }
-    
-    func autoSelectLUTsIfAvailable() {
-        // This method will be called from ContentView after LUTManager is loaded
-    }
-    
+
     // MARK: - Project Management Support Methods
     // Note: setPrimaryLUT and setSecondaryLUT methods are defined later in the file with enhanced logging
     
     func resetToDefaults() {
+        guard !isExporting, !isBatchProcessing else { return }
         primaryLUTOpacity = 1.0
         secondLUTOpacity = 1.0
         whiteBalanceValue = 0.0
@@ -293,7 +284,7 @@ class ProjectState: ObservableObject {
     }
     
     var isReadyForExport: Bool {
-        return isReadyForPreview && !isExporting
+        return isReadyForPreview && !isExporting && !isBatchProcessing
     }
     
     var hasSecondaryLUT: Bool {
@@ -305,8 +296,8 @@ class ProjectState: ObservableObject {
     }
     
     var formattedWhiteBalance: String {
-        let baseTemp = 5500
-        let tempChange = Int(whiteBalanceValue * 280)
+        let baseTemp = 6500
+        let tempChange = Int(whiteBalanceValue * 100)
         let finalTemp = baseTemp + tempChange
         return "\(finalTemp)K"
     }
@@ -341,188 +332,134 @@ class ProjectState: ObservableObject {
     
     // MARK: - File Management (Migrated from macOS)
     func addVideoURL(_ url: URL) {
-        // For professional video editing, allow replacing videos
-        // Clear existing videos first, then add the new one
-        if !videoURLs.isEmpty {
-            logVideoOperation("Replacing existing video with new selection", level: .info)
-            videoURLs.removeAll()
-        }
-        
-        videoURLs.append(url)
+        guard !isExporting, !isBatchProcessing else { return }
+        videoURLs = [url]
+        resetPreviewState()
         logVideoOperation("Added video: \(url.lastPathComponent)", level: .success)
-        
-        // Log video details using modern AVURLAsset
-        let asset = AVURLAsset(url: url)
-        logVideoOperation("Analyzing video properties...", level: .info)
-        
-        // Load video duration for scrubbing functionality
-        Task {
-            await loadVideoDuration(from: url)
-        }
-        
-        // Get video duration and format info
-        Task {
-            do {
-                let duration = try await asset.load(.duration)
-                let tracks = try await asset.load(.tracks)
-                
-                await MainActor.run {
-                    logVideoOperation("Video duration: \(String(format: "%.2f", duration.seconds))s", level: .info)
-                    logVideoOperation("Video tracks: \(tracks.count)", level: .info)
-                    
-                    if let videoTrack = tracks.first(where: { $0.mediaType == .video }) {
-                        Task {
-                            do {
-                                let naturalSize = try await videoTrack.load(.naturalSize)
-                                let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
-                                await MainActor.run {
-                                    logVideoOperation("Resolution: \(Int(naturalSize.width))x\(Int(naturalSize.height))", level: .info)
-                                    logVideoOperation("Frame rate: \(String(format: "%.2f", nominalFrameRate)) fps", level: .info)
-                                }
-                            } catch {
-                                await MainActor.run {
-                                    logVideoOperation("Could not load video track details: \(error.localizedDescription)", level: .warning)
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    logVideoOperation("Could not analyze video: \(error.localizedDescription)", level: .warning)
-                }
-            }
-        }
-        
-        // Generate initial preview
+        loadSelectedVideoDuration(url)
         generatePreview()
     }
-    
-    // MARK: - Video Scrubbing Methods
-    private func loadVideoDuration(from url: URL) async {
-        do {
-            let asset = AVURLAsset(url: url)
-            let duration = try await asset.load(.duration)
-            let durationSeconds = duration.seconds
-            
-            await MainActor.run {
-                self.videoDuration = durationSeconds
-                self.currentTime = 0.0 // Reset to beginning
-                print("🎬 Video duration loaded: \(durationSeconds) seconds")
-            }
-        } catch {
-            print("❌ Failed to load video duration: \(error.localizedDescription)")
-            await MainActor.run {
-                self.videoDuration = 0.0
+
+    /// Restore project media through the same path as a fresh import.
+    func replaceProjectVideos(_ urls: [URL]) {
+        guard !isExporting, !isBatchProcessing else { return }
+        clearBatchQueue()
+        batchMode = urls.count > 1
+        if batchMode {
+            addVideosToBatch(urls)
+        } else if let url = urls.first {
+            addVideoURL(url)
+        }
+    }
+
+    private func loadSelectedVideoDuration(_ url: URL) {
+        durationTask?.cancel()
+        durationTask = Task { [weak self] in
+            do {
+                let asset = AVURLAsset(url: url)
+                let duration = try await asset.load(.duration).seconds
+                guard !Task.isCancelled, let self, self.videoURLs.first == url else { return }
+                guard duration.isFinite, duration > 0 else {
+                    self.logVideoOperation("The video has no playable duration", level: .error)
+                    return
+                }
+                self.videoDuration = duration
+            } catch {
+                guard !Task.isCancelled, let self, self.videoURLs.first == url else { return }
+                self.logVideoOperation("Could not read video duration: \(error.localizedDescription)", level: .error)
             }
         }
     }
-    
+
+    private func resetPreviewState() {
+        scrubTask?.cancel()
+        previewTask?.cancel()
+        durationTask?.cancel()
+        previewGeneration = UUID()
+        previewImage = nil
+        rawPreviewImage = nil
+        previewError = nil
+        videoDuration = 0
+        currentTime = 0
+        isPreviewLoading = false
+        isScrubbing = false
+    }
+
+    // MARK: - Video Scrubbing Methods
     private var scrubTask: Task<Void, Never>?
     
     func scrubToTime(_ time: Double) {
-        guard videoDuration > 0 else { return }
-        
-        let clampedTime = max(0.0, min(time, videoDuration))
+        guard videoDuration > 0, time.isFinite else { return }
+        // The exact duration is past the last sample in many video containers.
+        let clampedTime = max(0, min(time, max(0, videoDuration - 1.0 / 600)))
         currentTime = clampedTime
-        
+        previewTask?.cancel()
+        previewGeneration = UUID()
+        isScrubbing = true
         scrubTask?.cancel()
-        scrubTask = Task {
-            try? await Task.sleep(nanoseconds: 150_000_000) // 150ms debounce
+        scrubTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled else { return }
-            generatePreviewAtTime(clampedTime)
+            self?.generatePreviewAtTime(clampedTime)
         }
     }
-    
+
     func generatePreviewAtTime(_ timeSeconds: Double) {
-        guard !videoURLs.isEmpty else { return }
-        
-        print("🎬 Generating preview at \(timeSeconds)s")
+        guard let videoURL = videoURLs.first, timeSeconds.isFinite else { return }
+        scrubTask?.cancel()
+        previewTask?.cancel()
+        let generation = UUID()
+        previewGeneration = generation
+        let time = max(0, videoDuration > 0
+            ? min(timeSeconds, max(0, videoDuration - 1.0 / 600)) : timeSeconds)
+        currentTime = time
         isPreviewLoading = true
-        isScrubbing = true
-        
-        Task {
+        previewError = nil
+
+        // Snapshot settings before awaiting. A superseded render must never replace
+        // the image for a newer video, timeline position, or grade.
+        let rawConfig = VideoProcessor.ProcessingConfig(
+            videoURLs: [videoURL], primaryLUTURL: nil, secondaryLUTURL: nil,
+            primaryLUTOpacity: 1, secondaryLUTOpacity: 1, whiteBalanceAdjustment: 0,
+            useGPUProcessing: useGPU, outputQuality: .medium,
+            outputDirectory: FileManager.default.temporaryDirectory)
+        let gradedConfig = VideoProcessor.ProcessingConfig(
+            videoURLs: [videoURL], primaryLUTURL: primaryLUTURL, secondaryLUTURL: secondaryLUTURL,
+            primaryLUTOpacity: primaryLUTOpacity, secondaryLUTOpacity: secondLUTOpacity,
+            whiteBalanceAdjustment: whiteBalanceValue, useGPUProcessing: useGPU,
+            outputQuality: .medium, outputDirectory: FileManager.default.temporaryDirectory)
+        let needsGrade = primaryLUTURL != nil || secondaryLUTURL != nil || whiteBalanceValue != 0
+
+        previewTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let videoURL = videoURLs[0]
-                
-                // Always generate raw preview for before/after comparison
-                let rawPreview = try await generateRawPreviewAtTime(videoURL: videoURL, timeSeconds: timeSeconds)
-                
-                // Generate LUT-processed preview if LUTs are selected
-                let processedPreview: UIImage
-                if primaryLUTURL != nil || secondaryLUTURL != nil {
-                    let videoProcessor = VideoProcessor()
-                    
-                    let lutOutputQuality: LUTProcessor.OutputQuality = {
-                        switch exportQuality {
-                        case .low: return .low
-                        case .medium: return .medium
-                        case .high: return .high
-                        case .maximum: return .maximum
-                        }
-                    }()
-                    
-                    let settings = VideoProcessor.ProcessingConfig(
-                        videoURLs: [videoURL],
-                        primaryLUTURL: primaryLUTURL,
-                        secondaryLUTURL: secondaryLUTURL,
-                        primaryLUTOpacity: Float(primaryLUTOpacity),
-                        secondaryLUTOpacity: Float(secondLUTOpacity),
-                        whiteBalanceAdjustment: Float(whiteBalanceValue),
-                        useGPUProcessing: useGPU,
-                        outputQuality: lutOutputQuality,
-                        outputDirectory: FileManager.default.temporaryDirectory
-                    )
-                    
-                    processedPreview = try await videoProcessor.generatePreviewAtTime(
-                        videoURL: videoURL, 
-                        timeSeconds: timeSeconds, 
-                        settings: settings
-                    )
-                    
-                    print("✅ Preview generated at \(timeSeconds)s with LUTs")
+                let raw = try await self.previewProcessor.generatePreviewAtTime(
+                    videoURL: videoURL, timeSeconds: time, settings: rawConfig)
+                try Task.checkCancellation()
+                let graded: UIImage
+                if needsGrade {
+                    graded = try await self.previewProcessor.generatePreviewAtTime(
+                        videoURL: videoURL, timeSeconds: time, settings: gradedConfig)
                 } else {
-                    // If no LUTs, processed preview is same as raw
-                    processedPreview = rawPreview
-                    print("✅ Raw preview generated at \(timeSeconds)s (no LUTs)")
+                    graded = raw
                 }
-                
-                await MainActor.run {
-                    self.rawPreviewImage = rawPreview
-                    self.previewImage = processedPreview
-                    self.isPreviewLoading = false
-                    self.isScrubbing = false
-                }
-                
+                guard !Task.isCancelled, self.previewGeneration == generation else { return }
+                self.rawPreviewImage = raw
+                self.previewImage = graded
+                self.isPreviewLoading = false
+                self.isScrubbing = false
             } catch {
-                await MainActor.run {
-                    self.isPreviewLoading = false
-                    self.isScrubbing = false
-                    print("❌ Failed to generate preview at \(timeSeconds)s: \(error.localizedDescription)")
-                }
+                guard !Task.isCancelled, self.previewGeneration == generation else { return }
+                self.previewImage = nil
+                self.rawPreviewImage = nil
+                self.previewError = error.localizedDescription
+                self.isPreviewLoading = false
+                self.isScrubbing = false
+                self.logPreviewOperation("Preview failed: \(error.localizedDescription)", level: .error)
             }
         }
     }
-    
-    private func generateRawPreviewAtTime(videoURL: URL, timeSeconds: Double) async throws -> UIImage {
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.1, preferredTimescale: 600)
-        
-        let time = CMTime(seconds: timeSeconds, preferredTimescale: 600)
-        
-        do {
-            let result = try await generator.image(at: time)
-            let cgImage = result.image
-            return UIImage(cgImage: cgImage)
-        } catch {
-            print("❌ Failed to generate raw preview at \(timeSeconds)s: \(error.localizedDescription)")
-            throw error
-        }
-    }
-    
+
     // MARK: - Debug Methods
     func forcePreviewGeneration() {
         print("🔄 ProjectState: Force preview generation requested")
@@ -531,21 +468,35 @@ class ProjectState: ObservableObject {
     }
     
     func addVideoURLs(_ urls: [URL]) {
-        let newURLs = urls.filter { !videoURLs.contains($0) }
-        videoURLs.append(contentsOf: newURLs)
-        updateStatus("Added \(newURLs.count) video(s)")
+        guard !isExporting, !isBatchProcessing else { return }
+        if batchMode {
+            addVideosToBatch(urls)
+        } else if let url = urls.first {
+            addVideoURL(url)
+        }
     }
-    
+
     func removeVideoURL(_ url: URL) {
+        guard !isExporting, !isBatchProcessing else { return }
+        let wasSelected = videoURLs.first == url
         videoURLs.removeAll { $0 == url }
+        if wasSelected {
+            resetPreviewState()
+            if let next = videoURLs.first {
+                loadSelectedVideoDuration(next)
+                generatePreview()
+            }
+        }
         updateStatus("Removed video: \(url.lastPathComponent)")
     }
-    
+
     func clearVideoURLs() {
+        guard !isExporting, !isBatchProcessing else { return }
         videoURLs.removeAll()
+        resetPreviewState()
         updateStatus("Cleared all videos")
     }
-    
+
     func setPrimaryLUT(_ url: URL?) {
         primaryLUTURL = url
         if let url = url {
@@ -616,10 +567,6 @@ class ProjectState: ObservableObject {
             return .failure("No video files selected")
         }
         
-        if primaryLUTURL == nil {
-            return .failure("No primary LUT selected")
-        }
-        
         return .success
     }
     
@@ -635,700 +582,205 @@ class ProjectState: ObservableObject {
         
         // Initialize with GPU processing enabled
         logGPUOperation("GPU processing enabled by default", level: .info)
+        videoProcessor.$exportProgress
+            .sink { [weak self] progress in
+                guard let self, self.isBatchProcessing,
+                      self.batchQueue.indices.contains(self.currentBatchIndex) else { return }
+                let clamped = progress.isFinite ? max(0, min(1, progress)) : 0
+                self.batchQueue[self.currentBatchIndex].progress = clamped
+                self.batchProgress = (Double(self.currentBatchIndex) + clamped) / Double(self.batchQueue.count)
+            }
+            .store(in: &cancellables)
     }
     
     func generatePreview() {
-        print("🖼️ ProjectState: generatePreview() called")
-        print("   - isReadyForPreview: \(isReadyForPreview)")
-        print("   - videoURLs count: \(videoURLs.count)")
-        print("   - primaryLUTURL: \(primaryLUTURL?.lastPathComponent ?? "nil")")
-        print("   - secondaryLUTURL: \(secondaryLUTURL?.lastPathComponent ?? "nil")")
-        
-        guard isReadyForPreview else { 
-            print("❌ ProjectState: Not ready for preview, clearing preview image")
-            previewImage = nil
-            return 
+        guard isReadyForPreview else {
+            resetPreviewState()
+            return
         }
-        
-        print("🖼️ ProjectState: Starting preview generation...")
-        isPreviewLoading = true
-        updateStatus("Generating preview...")
-        
-        Task {
-            do {
-                let videoURL = videoURLs[0]
-                
-                // Comprehensive video analysis for HDR, 10-bit, color space, and Rec. 2020
-                print("🔍 Comprehensive Video Analysis:")
-                print("   - URL: \(videoURL.path)")
-                print("   - File exists: \(FileManager.default.fileExists(atPath: videoURL.path))")
-                
-                let asset = AVURLAsset(url: videoURL)
-                
-                // Load asset properties for debugging
-                let duration = try await asset.load(.duration)
-                let tracks = try await asset.loadTracks(withMediaType: .video)
-                
-                print("   - Duration: \(duration.seconds) seconds")
-                print("   - Video tracks: \(tracks.count)")
-                
-                if let videoTrack = tracks.first {
-                    let naturalSize = try await videoTrack.load(.naturalSize)
-                    let formatDescriptions = try await videoTrack.load(.formatDescriptions)
-                    print("   - Resolution: \(naturalSize.width)x\(naturalSize.height)")
-                    print("   - Format descriptions: \(formatDescriptions.count)")
-                    
-                    // Enhanced codec and format analysis
-                    if let formatDesc = formatDescriptions.first {
-                        let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDesc)
-                        let fourCC = String(format: "%c%c%c%c", 
-                                          (mediaSubType >> 24) & 0xFF,
-                                          (mediaSubType >> 16) & 0xFF, 
-                                          (mediaSubType >> 8) & 0xFF,
-                                          mediaSubType & 0xFF)
-                        print("   - Codec: \(fourCC)")
-                        
-                        // Analyze pixel format for bit depth and color space
-                        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
-                        analyzePixelFormat(pixelFormat)
-                        
-                        // Check for HDR metadata
-                        analyzeHDRMetadata(formatDesc)
-                        
-                        // Analyze color space and transfer function
-                        analyzeColorSpace(formatDesc)
-                    }
-                    
-                    // Check for Apple Log characteristics
-                    analyzeAppleLogCharacteristics(videoTrack)
-                }
-                
-                // Always generate raw preview first
-                print("🎬 Generating raw frame preview (no LUTs applied)...")
-                let rawPreview = try await generateRawPreview(videoURL: videoURL, duration: duration)
-                
-                // Use VideoProcessor for LUT-processed preview if LUTs are selected
-                if primaryLUTURL != nil || secondaryLUTURL != nil {
-                    print("🎨 Generating LUT-processed preview...")
-                    let videoProcessor = VideoProcessor()
-                    
-                    // Convert ExportQuality to LUTProcessor.OutputQuality
-                    let lutOutputQuality: LUTProcessor.OutputQuality = {
-                        switch exportQuality {
-                        case .low: return .low
-                        case .medium: return .medium
-                        case .high: return .high
-                        case .maximum: return .maximum
-                        }
-                    }()
-                    
-                    let settings = VideoProcessor.ProcessingConfig(
-                        videoURLs: [videoURL],
-                        primaryLUTURL: primaryLUTURL,
-                        secondaryLUTURL: secondaryLUTURL,
-                        primaryLUTOpacity: Float(primaryLUTOpacity),
-                        secondaryLUTOpacity: Float(secondLUTOpacity),
-                        whiteBalanceAdjustment: Float(whiteBalanceValue),
-                        useGPUProcessing: useGPU,
-                        outputQuality: lutOutputQuality,
-                        outputDirectory: FileManager.default.temporaryDirectory
-                    )
-                    
-                    let processedPreview = try await videoProcessor.generatePreview(videoURL: videoURL, settings: settings)
-                    
-                    await MainActor.run {
-                        self.rawPreviewImage = rawPreview
-                        self.previewImage = processedPreview
-                        self.isPreviewLoading = false
-                        self.updateStatus("LUT preview generated")
-                        print("✅ ProjectState: Both raw and LUT-processed previews generated successfully")
-                    }
-                    return
-                } else {
-                    // No LUTs selected, use raw preview as main preview
-                    await MainActor.run {
-                        self.rawPreviewImage = rawPreview
-                        self.previewImage = rawPreview
-                        self.isPreviewLoading = false
-                        self.updateStatus("Raw preview generated")
-                        print("✅ ProjectState: Raw preview generated (no LUTs)")
-                    }
-                    return
-                }
+        // Changing a grade preserves the frame the user is inspecting.
+        generatePreviewAtTime(currentTime)
+    }
 
-                
-            } catch {
-                await MainActor.run {
-                    self.isPreviewLoading = false
-                    self.updateStatus("Preview generation failed: \(error.localizedDescription)")
-                    print("❌ ProjectState: Preview generation failed: \(error.localizedDescription)")
-                    
-                    // Create a placeholder image for problematic videos
-                    let placeholderImage = self.createPlaceholderImage()
-                    self.previewImage = placeholderImage
-                    print("📷 Created placeholder image for problematic video")
-                }
-            }
-        }
-    }
-    
-    // MARK: - Raw Preview Generation
-    private func generateRawPreview(videoURL: URL, duration: CMTime) async throws -> UIImage {
-        let asset = AVURLAsset(url: videoURL)
-        
-        // Create multiple generators with different configurations for maximum compatibility
-        let generators = [
-            createStandardImageGenerator(asset: asset),
-            createCompatibilityImageGenerator(asset: asset),
-            createLegacyImageGenerator(asset: asset)
-        ]
-        
-        // Try different time positions
-        let timePositions = [0.1, 0.5, 1.0, 2.0, duration.seconds * 0.1, duration.seconds * 0.05]
-        var lastError: Error?
-        
-        for (genIndex, generator) in generators.enumerated() {
-            print("🎬 Trying generator \(genIndex + 1) of \(generators.count)...")
-            
-            for (timeIndex, timePosition) in timePositions.enumerated() {
-                guard timePosition < duration.seconds && timePosition >= 0 else { continue }
-                
-                let time = CMTime(seconds: timePosition, preferredTimescale: 600)
-                
-                do {
-                    print("🎬 Generator \(genIndex + 1), Attempt \(timeIndex + 1): Generating raw frame at \(timePosition) seconds...")
-                    let result = try await generator.image(at: time)
-                    let cgImage = result.image
-                    let previewUIImage = UIImage(cgImage: cgImage)
-                    
-                    print("✅ ProjectState: Raw preview generated successfully at \(timePosition)s with generator \(genIndex + 1)")
-                    return previewUIImage
-                    
-                } catch {
-                    print("❌ Generator \(genIndex + 1), Attempt \(timeIndex + 1) failed: \(error.localizedDescription)")
-                    lastError = error
-                    
-                    // Print detailed error info
-                    if let nsError = error as NSError? {
-                        print("   - Domain: \(nsError.domain)")
-                        print("   - Code: \(nsError.code)")
-                        print("   - UserInfo: \(nsError.userInfo)")
-                    }
-                    continue
-                }
-            }
-        }
-        
-        // If all attempts failed, throw the last error
-        throw lastError ?? NSError(domain: "PreviewError", code: -1, userInfo: [NSLocalizedDescriptionKey: "All preview generation attempts failed"])
-    }
-    
-    // MARK: - Enhanced Image Generator Methods for Professional Video Compatibility
-    private func createStandardImageGenerator(asset: AVAsset) -> AVAssetImageGenerator {
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
-        return generator
-    }
-    
-    private func createCompatibilityImageGenerator(asset: AVAsset) -> AVAssetImageGenerator {
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 1.0, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 1.0, preferredTimescale: 600)
-        // More aggressive tolerance for difficult formats
-        generator.maximumSize = CGSize(width: 1920, height: 1080) // Limit size for compatibility
-        return generator
-    }
-    
-    private func createLegacyImageGenerator(asset: AVAsset) -> AVAssetImageGenerator {
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 2.0, preferredTimescale: 600)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 2.0, preferredTimescale: 600)
-        // Maximum compatibility settings
-        generator.maximumSize = CGSize(width: 1280, height: 720) // Even smaller for legacy compatibility
-        generator.apertureMode = .cleanAperture
-        return generator
-    }
-    
     func optimizeForBattery() {
         if shouldOptimizeForBattery {
             exportQuality = .medium
             updateStatus("Optimized for battery life")
         }
     }
-    
-    // resetToDefaults() method is already defined earlier in the file
-    
-    // MARK: - Helper Methods
-    private func createPlaceholderImage() -> UIImage {
-        let size = CGSize(width: 400, height: 300)
-        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-        defer { UIGraphicsEndImageContext() }
-        
-        guard let context = UIGraphicsGetCurrentContext() else { return UIImage() }
-        
-        // Dark background
-        context.setFillColor(UIColor.black.cgColor)
-        context.fill(CGRect(origin: .zero, size: size))
-        
-        // Gray border
-        context.setStrokeColor(UIColor.gray.cgColor)
-        context.setLineWidth(2.0)
-        context.stroke(CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1))
-        
-        // Play icon in center
-        let playIconSize: CGFloat = 60
-        let playIconRect = CGRect(
-            x: (size.width - playIconSize) / 2,
-            y: (size.height - playIconSize) / 2,
-            width: playIconSize,
-            height: playIconSize
-        )
-        
-        context.setFillColor(UIColor.white.cgColor)
-        context.beginPath()
-        context.move(to: CGPoint(x: playIconRect.minX + 15, y: playIconRect.minY + 10))
-        context.addLine(to: CGPoint(x: playIconRect.maxX - 15, y: playIconRect.midY))
-        context.addLine(to: CGPoint(x: playIconRect.minX + 15, y: playIconRect.maxY - 10))
-        context.closePath()
-        context.fillPath()
-        
-        return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-    }
-    
-    // MARK: - Comprehensive Video Analysis Methods
-    
-    private func analyzePixelFormat(_ pixelFormat: FourCharCode) {
-        print("🎨 Pixel Format Analysis:")
-        
-        let pixelFormatString = String(format: "%c%c%c%c", 
-                                     (pixelFormat >> 24) & 0xFF,
-                                     (pixelFormat >> 16) & 0xFF, 
-                                     (pixelFormat >> 8) & 0xFF,
-                                     pixelFormat & 0xFF)
-        print("   - Pixel Format: \(pixelFormatString)")
-        
-        // Analyze bit depth and color space based on pixel format
-        switch pixelFormat {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
-            print("   - Bit Depth: 8-bit")
-            print("   - Color Sampling: 4:2:0")
-            print("   - HDR Support: ❌ No (8-bit limitation)")
-            
-        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
-            print("   - Bit Depth: ✅ 10-bit (HDR capable)")
-            print("   - Color Sampling: 4:2:0")
-            print("   - HDR Support: ✅ Yes (10-bit support)")
-            print("   - Apple Log Compatible: ✅ Yes")
-            
-        case kCVPixelFormatType_422YpCbCr8,
-             kCVPixelFormatType_422YpCbCr8_yuvs:
-            print("   - Bit Depth: 8-bit")
-            print("   - Color Sampling: 4:2:2")
-            print("   - HDR Support: ❌ No (8-bit limitation)")
-            
-        case kCVPixelFormatType_422YpCbCr10:
-            print("   - Bit Depth: ✅ 10-bit (HDR capable)")
-            print("   - Color Sampling: 4:2:2")
-            print("   - HDR Support: ✅ Yes (10-bit support)")
-            print("   - Apple Log Compatible: ✅ Yes")
-            
-        case kCVPixelFormatType_444YpCbCr8:
-            print("   - Bit Depth: 8-bit")
-            print("   - Color Sampling: 4:4:4")
-            print("   - HDR Support: ❌ No (8-bit limitation)")
-            
-        case kCVPixelFormatType_444YpCbCr10:
-            print("   - Bit Depth: ✅ 10-bit (HDR capable)")
-            print("   - Color Sampling: 4:4:4")
-            print("   - HDR Support: ✅ Yes (10-bit support)")
-            print("   - Apple Log Compatible: ✅ Yes")
-            
-        default:
-            print("   - Bit Depth: Unknown format")
-            print("   - HDR Support: ⚠️ Unknown")
+
+    private func invalidateCompletedExports() {
+        guard !isExporting, !isBatchProcessing else { return }
+        exportConfigurationVersion += 1
+        batchExportedVideoURLs.removeAll()
+        batchProgress = 0
+        batchProcessingStatus = ""
+        for index in batchQueue.indices where batchQueue[index].status != .pending || batchQueue[index].outputURL != nil {
+            batchQueue[index].status = .pending
+            batchQueue[index].progress = 0
+            batchQueue[index].outputURL = nil
+            batchQueue[index].errorMessage = nil
         }
+        // Keep completed files on disk. Editing the current project only removes
+        // stale Save/Share state; earlier exports remain available through Files.
     }
-    
-    private func analyzeHDRMetadata(_ formatDesc: CMFormatDescription) {
-        print("🌈 HDR Metadata Analysis:")
-        
-        // Check for HDR extensions
-        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
-            print("   - Format Extensions Found: \(extensions.keys.joined(separator: ", "))")
-            
-            // Check for color primaries
-            if let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String {
-                print("   - Color Primaries: \(colorPrimaries)")
-                
-                if colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) {
-                    print("   - Color Space: ✅ Rec. 2020 (Wide Color Gamut)")
-                    print("   - HDR Ready: ✅ Yes")
-                } else if colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_709_2 as String) {
-                    print("   - Color Space: Rec. 709 (Standard)")
-                    print("   - HDR Ready: ⚠️ Limited")
-                } else if colorPrimaries == (kCVImageBufferColorPrimaries_P3_D65 as String) {
-                    print("   - Color Space: Display P3 (Wide Color)")
-                    print("   - HDR Ready: ⚠️ Partial")
-                } else {
-                    print("   - Color Space: \(colorPrimaries)")
-                }
-            } else {
-                print("   - Color Primaries: ❌ Not specified")
-            }
-            
-            // Check for transfer function
-            if let transferFunction = extensions[kCVImageBufferTransferFunctionKey as String] as? String {
-                print("   - Transfer Function: \(transferFunction)")
-                
-                if transferFunction == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) {
-                    print("   - HDR Type: ✅ HLG (Hybrid Log-Gamma)")
-                } else if transferFunction == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String) {
-                    print("   - HDR Type: ✅ PQ (Perceptual Quantizer)")
-                } else if transferFunction == (kCVImageBufferTransferFunction_ITU_R_709_2 as String) {
-                    print("   - HDR Type: ❌ Standard Gamma (SDR)")
-                } else {
-                    print("   - HDR Type: ⚠️ Unknown (\(transferFunction))")
-                }
-            } else {
-                print("   - Transfer Function: ❌ Not specified")
-            }
-            
-            // Check for YCbCr matrix
-            if let ycbcrMatrix = extensions[kCVImageBufferYCbCrMatrixKey as String] as? String {
-                print("   - YCbCr Matrix: \(ycbcrMatrix)")
-                
-                if ycbcrMatrix == (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String) {
-                    print("   - Matrix Type: ✅ Rec. 2020")
-                } else if ycbcrMatrix == (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String) {
-                    print("   - Matrix Type: Rec. 709")
-                } else {
-                    print("   - Matrix Type: \(ycbcrMatrix)")
-                }
-            } else {
-                print("   - YCbCr Matrix: ❌ Not specified")
-            }
-            
-        } else {
-            print("   - HDR Metadata: ❌ No extensions found")
-        }
-    }
-    
-    private func analyzeColorSpace(_ formatDesc: CMFormatDescription) {
-        print("🎨 Color Space Analysis:")
-        
-        if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
-            
-            // Comprehensive color space analysis
-            let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
-            let transferFunction = extensions[kCVImageBufferTransferFunctionKey as String] as? String
-            let ycbcrMatrix = extensions[kCVImageBufferYCbCrMatrixKey as String] as? String
-            
-            print("   - Complete Color Profile:")
-            print("     • Primaries: \(colorPrimaries ?? "Unspecified")")
-            print("     • Transfer: \(transferFunction ?? "Unspecified")")
-            print("     • Matrix: \(ycbcrMatrix ?? "Unspecified")")
-            
-            // Check for Rec. 2020 compatibility
-            let isRec2020 = colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
-            let isRec2020Matrix = ycbcrMatrix == (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String)
-            
-            if isRec2020 && isRec2020Matrix {
-                print("   - Rec. 2020 Support: ✅ Full (Primaries + Matrix)")
-            } else if isRec2020 {
-                print("   - Rec. 2020 Support: ⚠️ Partial (Primaries only)")
-            } else {
-                print("   - Rec. 2020 Support: ❌ No")
-            }
-            
-            // Check for wide color gamut
-            let hasWideGamut = colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) ||
-                              colorPrimaries == (kCVImageBufferColorPrimaries_P3_D65 as String)
-            print("   - Wide Color Gamut: \(hasWideGamut ? "✅ Yes" : "❌ No")")
-            
-        } else {
-            print("   - Color Space: ❌ No metadata available")
-        }
-    }
-    
-    private func analyzeAppleLogCharacteristics(_ videoTrack: AVAssetTrack) {
-        print("🍎 Apple Log Analysis:")
-        
-        Task {
-            do {
-                // Check format descriptions for Apple Log indicators
-                let formatDescriptions = try await videoTrack.load(.formatDescriptions)
-                
-                for formatDesc in formatDescriptions {
-                    if let extensions = CMFormatDescriptionGetExtensions(formatDesc) as? [String: Any] {
-                        
-                        // Check for Apple-specific metadata
-                        let hasAppleExtensions = extensions.keys.contains { key in
-                            key.lowercased().contains("apple") || 
-                            key.lowercased().contains("log") ||
-                            key.contains("com.apple")
-                        }
-                        
-                        if hasAppleExtensions {
-                            print("   - Apple Metadata: ✅ Found")
-                            print("   - Apple Log Likelihood: ✅ High")
-                        }
-                        
-                        // Check transfer function for log characteristics
-                        if let transferFunction = extensions[kCVImageBufferTransferFunctionKey as String] as? String {
-                            if transferFunction.lowercased().contains("log") {
-                                print("   - Log Transfer Function: ✅ Detected")
-                                print("   - Apple Log Compatible: ✅ Yes")
-                            }
-                        }
-                        
-                        // Check for 10-bit + wide gamut combination (Apple Log requirement)
-                        let pixelFormat = CMFormatDescriptionGetMediaSubType(formatDesc)
-                        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
-                                     pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
-                                     pixelFormat == kCVPixelFormatType_422YpCbCr10 ||
-                                     pixelFormat == kCVPixelFormatType_444YpCbCr10
-                        
-                        let colorPrimaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String
-                        let isWideGamut = colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) ||
-                                         colorPrimaries == (kCVImageBufferColorPrimaries_P3_D65 as String)
-                        
-                        if is10Bit && isWideGamut {
-                            print("   - Technical Requirements: ✅ Met (10-bit + Wide Gamut)")
-                            print("   - Apple Log Processing: ✅ Recommended")
-                        } else if is10Bit {
-                            print("   - Technical Requirements: ⚠️ Partial (10-bit, limited gamut)")
-                        } else {
-                            print("   - Technical Requirements: ❌ Not met (8-bit)")
-                        }
-                    }
-                }
-                
-                // Check filename for Apple Log indicators
-                if let urlAsset = videoTrack.asset as? AVURLAsset {
-                    let filename = urlAsset.url.lastPathComponent.lowercased()
-                    if filename.contains("applelog") || filename.contains("apple_log") || filename.contains("log") {
-                        print("   - Filename Indicator: ✅ Apple Log detected in filename")
-                    }
-                }
-                
-            } catch {
-                print("   - Apple Log Analysis: ❌ Failed to analyze (\(error.localizedDescription))")
-            }
-        }
-    }
-    
+
     // MARK: - Batch Processing Methods
     
     func addVideoToBatch(_ url: URL) {
-        let videoName = url.lastPathComponent
-        
-        // Check for duplicates based on URL path
-        if batchQueue.contains(where: { $0.url.path == url.path }) {
-            print("⚠️ Duplicate video not added to batch: \(videoName) already exists")
-            return
-        }
-        
-        let batchItem = BatchVideoItem(url: url, name: videoName)
-        batchQueue.append(batchItem)
-        print("📦 Added video to batch: \(videoName)")
-        
-        // If this is the first video, select it for preview
-        if batchQueue.count == 1 {
-            selectBatchVideoForPreview(index: 0)
-        }
+        addVideosToBatch([url])
     }
-    
+
     func addVideosToBatch(_ urls: [URL]) {
-        var addedCount = 0
-        var duplicateCount = 0
-        
-        for url in urls {
-            let videoName = url.lastPathComponent
-            
-            // Check for duplicates based on URL path
-            if batchQueue.contains(where: { $0.url.path == url.path }) {
-                duplicateCount += 1
-                print("⚠️ Duplicate video not added to batch: \(videoName) already exists")
-                continue
-            }
-            
-            let batchItem = BatchVideoItem(url: url, name: videoName)
-            batchQueue.append(batchItem)
-            addedCount += 1
-            print("📦 Added video to batch: \(videoName)")
+        guard !isExporting, !isBatchProcessing else { return }
+        let wasEmpty = batchQueue.isEmpty
+        let oldCount = batchQueue.count
+        for url in urls where !batchQueue.contains(where: { $0.url == url }) {
+            batchQueue.append(BatchVideoItem(url: url, name: url.lastPathComponent))
         }
-        
-        print("📦 Batch update: \(addedCount) videos added, \(duplicateCount) duplicates ignored. Total: \(batchQueue.count)")
-        
-        // If this was the first batch and we added videos, select the first one for preview
-        if batchQueue.count == addedCount && addedCount > 0 {
+        if batchQueue.count != oldCount { invalidateCompletedExports() }
+        if wasEmpty, !batchQueue.isEmpty {
             selectBatchVideoForPreview(index: 0)
         }
     }
-    
+
     func selectBatchVideoForPreview(index: Int) {
-        guard index >= 0 && index < batchQueue.count else { return }
-        
+        guard batchQueue.indices.contains(index) else { return }
         selectedBatchVideoIndex = index
-        let selectedVideo = batchQueue[index]
-        
-        // Update the main video URL for preview generation
-        videoURLs = [selectedVideo.url]
-        
-        // Load video duration for scrubbing
-        Task {
-            await loadVideoDuration(from: selectedVideo.url)
-        }
-        
-        // Generate preview for the selected video
+        let url = batchQueue[index].url
+        videoURLs = [url]
+        resetPreviewState()
+        loadSelectedVideoDuration(url)
         generatePreview()
-        
-        print("📦 Selected video for preview: \(selectedVideo.name)")
     }
-    
+
     func removeVideoFromBatch(at index: Int) {
-        guard index >= 0, index < batchQueue.count else { return }
-        let removedItem = batchQueue.remove(at: index)
-        print("📦 Removed video from batch: \(removedItem.name)")
-        
-        // Adjust selected index if necessary
-        if selectedBatchVideoIndex >= batchQueue.count {
-            selectedBatchVideoIndex = max(0, batchQueue.count - 1)
-        }
-        
-        // If we removed the selected video and there are still videos, select another one
-        if !batchQueue.isEmpty && index == selectedBatchVideoIndex {
-            selectBatchVideoForPreview(index: selectedBatchVideoIndex)
-        } else if batchQueue.isEmpty {
-            videoURLs = []
-            videoDuration = 0.0
-            currentTime = 0.0
+        guard !isExporting, !isBatchProcessing, batchQueue.indices.contains(index) else { return }
+        let selectedID = batchQueue.indices.contains(selectedBatchVideoIndex)
+            ? batchQueue[selectedBatchVideoIndex].id : nil
+        invalidateCompletedExports()
+        batchQueue.remove(at: index)
+        if batchQueue.isEmpty {
+            selectedBatchVideoIndex = 0
+            clearVideoURLs()
+        } else if let selectedID,
+                  let retainedIndex = batchQueue.firstIndex(where: { $0.id == selectedID }) {
+            // Removing an earlier row shifts the index but preserves selection.
+            selectedBatchVideoIndex = retainedIndex
+        } else {
+            selectBatchVideoForPreview(index: min(index, batchQueue.count - 1))
         }
     }
-    
+
     func removeVideoFromBatch(id: UUID) {
         if let index = batchQueue.firstIndex(where: { $0.id == id }) {
             removeVideoFromBatch(at: index)
         }
-        print("📦 Removed video from batch by ID")
     }
-    
+
     func clearBatchQueue() {
+        guard !isExporting, !isBatchProcessing else { return }
+        invalidateCompletedExports()
         batchQueue.removeAll()
         currentBatchIndex = 0
-        batchProgress = 0.0
+        batchProgress = 0
         batchProcessingStatus = ""
         selectedBatchVideoIndex = 0
         batchExportedVideoURLs.removeAll()
-        videoURLs = []
-        videoDuration = 0.0
-        currentTime = 0.0
-        print("📦 Cleared batch queue")
+        clearVideoURLs()
     }
-    
+
     func reorderBatchQueue(from source: IndexSet, to destination: Int) {
+        guard !isExporting, !isBatchProcessing,
+              source.allSatisfy({ batchQueue.indices.contains($0) }),
+              (0...batchQueue.count).contains(destination) else { return }
+        let selectedID = batchQueue.indices.contains(selectedBatchVideoIndex)
+            ? batchQueue[selectedBatchVideoIndex].id : nil
+        let oldOrder = batchQueue.map(\.id)
         batchQueue.move(fromOffsets: source, toOffset: destination)
-        print("📦 Reordered batch queue")
+        if batchQueue.map(\.id) != oldOrder { invalidateCompletedExports() }
+        if let index = batchQueue.firstIndex(where: { $0.id == selectedID }) {
+            selectedBatchVideoIndex = index
+        }
     }
-    
+
+    func cancelBatchProcessing() {
+        guard isBatchProcessing else { return }
+        batchCancellationRequested = true
+        videoProcessor.cancelProcessing()
+        batchProcessingStatus = "Cancelling batch..."
+    }
+
     func startBatchProcessing() async {
-        guard !batchQueue.isEmpty else {
-            print("❌ Cannot start batch processing: queue is empty")
-            return
-        }
-        
-        guard primaryLUTURL != nil || secondaryLUTURL != nil else {
-            print("❌ Cannot start batch processing: no LUTs selected")
-            batchProcessingStatus = "Error: No LUTs selected"
-            return
-        }
-        
+        guard !isExporting, !isBatchProcessing, !batchQueue.isEmpty else { return }
         isBatchProcessing = true
+        batchCancellationRequested = false
         currentBatchIndex = 0
-        batchProgress = 0.0
-        batchProcessingStatus = "Starting batch processing..."
-        
-        print("📦 Starting batch processing of \(batchQueue.count) videos")
-        
-        for (index, var batchItem) in batchQueue.enumerated() {
-            currentBatchIndex = index
-            batchItem.status = .processing
-            batchItem.progress = 0.0
-            batchQueue[index] = batchItem
-            
-            batchProcessingStatus = "Processing \(batchItem.name) (\(index + 1)/\(batchQueue.count))"
-            print("📦 Processing video \(index + 1)/\(batchQueue.count): \(batchItem.name)")
-            
-            do {
-                // Process the video using existing VideoProcessor
-                let outputURL = try await processBatchVideo(batchItem)
-                
-                // Update batch item with success
-                batchQueue[index].status = .completed
-                batchQueue[index].progress = 1.0
-                batchQueue[index].outputURL = outputURL
-                batchExportedVideoURLs.append(outputURL) // Add to the list of exported URLs
-                
-                print("✅ Completed processing: \(batchItem.name)")
-                
-            } catch {
-                // Update batch item with error
-                batchQueue[index].status = .failed
-                batchQueue[index].errorMessage = error.localizedDescription
-                
-                print("❌ Failed to process: \(batchItem.name) - \(error.localizedDescription)")
-            }
-            
-            // Update overall progress
-            batchProgress = Double(index + 1) / Double(batchQueue.count)
+        batchProgress = 0
+        batchExportedVideoURLs.removeAll()
+        for index in batchQueue.indices {
+            batchQueue[index].status = .pending
+            batchQueue[index].progress = 0
+            batchQueue[index].outputURL = nil
+            batchQueue[index].errorMessage = nil
         }
-        
-        isBatchProcessing = false
-        batchProcessingStatus = "Batch processing completed"
-        print("📦 Batch processing completed")
-    }
-    
-    private func processBatchVideo(_ batchItem: BatchVideoItem) async throws -> URL {
-        // Create output directory for batch processing
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let outputDirectory = documentsPath.appendingPathComponent("BatchOutput")
-        
-        // Ensure output directory exists
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
-        
-        // Create processing config
+        defer { isBatchProcessing = false }
+
+        // Every item in a run uses the settings present when Export was pressed.
+        let outputDirectory = URL.documentsDirectory.appendingPathComponent("BatchOutput", isDirectory: true)
         let config = VideoProcessor.ProcessingConfig(
-            videoURLs: [batchItem.url],
-            primaryLUTURL: primaryLUTURL,
-            secondaryLUTURL: secondaryLUTURL,
-            primaryLUTOpacity: primaryLUTOpacity,
-            secondaryLUTOpacity: secondLUTOpacity,
-            whiteBalanceAdjustment: whiteBalanceValue,
-            useGPUProcessing: useGPU,
-            outputQuality: exportQuality.toLUTProcessorQuality(),
-            outputDirectory: outputDirectory
-        )
-        
-        // Process the video
-        await videoProcessor.processVideos(config: config)
-        
-        // Check if processing was successful
-        guard !videoProcessor.exportedVideoURLs.isEmpty else {
-            throw NSError(domain: "BatchProcessing", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to process video: \(batchItem.name)"])
+            videoURLs: [], primaryLUTURL: primaryLUTURL, secondaryLUTURL: secondaryLUTURL,
+            primaryLUTOpacity: primaryLUTOpacity, secondaryLUTOpacity: secondLUTOpacity,
+            whiteBalanceAdjustment: whiteBalanceValue, useGPUProcessing: useGPU,
+            outputQuality: exportQuality.toLUTProcessorQuality(), outputDirectory: outputDirectory)
+        let items = batchQueue
+        for (index, item) in items.enumerated() {
+            guard !batchCancellationRequested, !Task.isCancelled else { break }
+            currentBatchIndex = index
+            batchQueue[index].status = .processing
+            batchProcessingStatus = "Processing \(item.name) (\(index + 1)/\(items.count))"
+            do {
+                let outputURL = try await processBatchVideo(item, config: config)
+                // A completed file remains available even if cancellation arrived
+                // at the boundary between this item and the next.
+                batchQueue[index].status = .completed
+                batchQueue[index].progress = 1
+                batchQueue[index].outputURL = outputURL
+                batchExportedVideoURLs.append(outputURL)
+            } catch {
+                if let processingError = error as? VideoProcessor.ProcessingError,
+                   case .cancelled = processingError {
+                    batchCancellationRequested = true
+                }
+                batchQueue[index].status = .failed
+                batchQueue[index].errorMessage = batchCancellationRequested || Task.isCancelled
+                    ? "Cancelled" : error.localizedDescription
+            }
+            batchProgress = Double(index + 1) / Double(items.count)
         }
-        
-        guard let firstURL = videoProcessor.exportedVideoURLs.first else {
-            throw NSError(domain: "BatchProcessing", code: 2, userInfo: [NSLocalizedDescriptionKey: "No exported URL available for: \(batchItem.name)"])
+        if batchCancellationRequested || Task.isCancelled {
+            batchProcessingStatus = "Batch cancelled: \(batchExportedVideoURLs.count) completed"
+        } else {
+            let failed = batchQueue.filter { $0.status == .failed }.count
+            batchProcessingStatus = "Batch finished: \(batchExportedVideoURLs.count) completed, \(failed) failed"
         }
-        return firstURL
     }
-    
+
+    private func processBatchVideo(_ item: BatchVideoItem, config: VideoProcessor.ProcessingConfig) async throws -> URL {
+        let itemConfig = VideoProcessor.ProcessingConfig(
+            videoURLs: [item.url], primaryLUTURL: config.primaryLUTURL, secondaryLUTURL: config.secondaryLUTURL,
+            primaryLUTOpacity: config.primaryLUTOpacity, secondaryLUTOpacity: config.secondaryLUTOpacity,
+            whiteBalanceAdjustment: config.whiteBalanceAdjustment, useGPUProcessing: config.useGPUProcessing,
+            outputQuality: config.outputQuality, outputDirectory: config.outputDirectory)
+        await videoProcessor.processVideos(config: itemConfig)
+        if let error = videoProcessor.lastError { throw error }
+        guard let outputURL = videoProcessor.exportedVideoURLs.first else {
+            throw NSError(domain: "BatchProcessing", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No output was created for \(item.name)"])
+        }
+        return outputURL
+    }
+
     var batchProcessingProgress: Double {
         return batchProgress
     }
@@ -1360,7 +812,7 @@ enum ExportQuality: String, CaseIterable, Codable {
         case .low: return "Low (Fast, 720p max, smaller files)"
         case .medium: return "Medium (Balanced, 1080p max)"
         case .high: return "High (Original resolution, recommended)"
-        case .maximum: return "Max (Original data preserved, largest files)"
+        case .maximum: return "Maximum (Original resolution, 10-bit HEVC)"
         }
     }
     
@@ -1415,6 +867,3 @@ struct RecentProject: Identifiable, Codable {
 // FavoriteProject is now defined in ProjectManager.swift to avoid duplication
 
 // ProjectSettings is now defined in ProjectManager.swift to avoid duplication
-
-// MARK: - Extensions  
-// Note: LUTProcessor.OutputQuality extension will be added when LUTProcessor is imported 

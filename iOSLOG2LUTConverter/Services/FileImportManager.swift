@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import PhotosUI
 
 // MARK: - iOS File Import Manager (Replaces macOS Drag & Drop)
+@MainActor
 class FileImportManager: ObservableObject {
     
     // MARK: - Published Properties
@@ -55,6 +56,7 @@ class FileImportManager: ObservableObject {
     }
     
     @Published var lastImportStatus: ImportStatus = .idle
+    @Published private(set) var lastImportedURL: URL?
     
     // MARK: - Photo Picker Configuration
     var photoPickerConfig: PHPickerConfiguration {
@@ -82,10 +84,7 @@ class FileImportManager: ObservableObject {
 
     enum SupportedLUTTypes {
         static let types: [UTType] = [
-            UTType(filenameExtension: "cube") ?? .data,
-            UTType(filenameExtension: "3dl") ?? .data,
-            UTType(filenameExtension: "lut") ?? .data,
-            .data // Allow generic data files for LUTs
+            UTType(filenameExtension: "cube") ?? .data
         ]
     }
 
@@ -111,49 +110,45 @@ class FileImportManager: ObservableObject {
     }
 
     // MARK: - Import Methods
+    /// Copy imports into app-owned storage so later preview/export does not rely on a picker grant.
     func importVideo(from url: URL) {
         lastImportStatus = .importing
-        
-        // Start accessing the security-scoped resource
-        guard url.startAccessingSecurityScopedResource() else {
-            lastImportStatus = .error("Unable to access video file")
-            return
-        }
-        
-        // Simulate import process with actual file validation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            // Stop accessing the resource when done
-            url.stopAccessingSecurityScopedResource()
-            self.lastImportStatus = .success("Video imported: \(url.lastPathComponent)")
+        lastImportedURL = nil
+        Task {
+            do {
+                let importedURL = try await Task.detached(priority: .userInitiated) {
+                    try Self.copyImportedFile(from: url)
+                }.value
+                lastImportedURL = importedURL
+                lastImportStatus = .success("Video imported: \(url.lastPathComponent)")
+            } catch {
+                lastImportStatus = .error("Failed to import video: \(error.localizedDescription)")
+            }
         }
     }
-    
+
     func importVideoFromPhotos(results: [PHPickerResult]) {
         guard let result = results.first else { return }
-        
         lastImportStatus = .importing
-        
+        lastImportedURL = nil
         result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { [weak self] url, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    self?.lastImportStatus = .error("Failed to load video: \(error.localizedDescription)")
-                    return
-                }
-                
-                guard let url = url else {
-                    self?.lastImportStatus = .error("No video URL received")
-                    return
-                }
-                
-                // Copy the file to a temporary location since the original will be deleted
-                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
-                
-                do {
-                    try FileManager.default.copyItem(at: url, to: tempURL)
+            // NSItemProvider deletes this URL as soon as its completion handler returns.
+            // Perform the copy here, before hopping to the main actor.
+            let imported: Result<URL, Error>
+            if let error {
+                imported = .failure(error)
+            } else if let url {
+                imported = Result { try Self.copyImportedFile(from: url) }
+            } else {
+                imported = .failure(CocoaError(.fileReadUnknown))
+            }
+            Task { @MainActor in
+                switch imported {
+                case .success(let url):
+                    self?.lastImportedURL = url
                     self?.lastImportStatus = .success("Video imported from Photos")
-                    // Here you would typically update your project state with the video URL
-                } catch {
-                    self?.lastImportStatus = .error("Failed to copy video: \(error.localizedDescription)")
+                case .failure(let error):
+                    self?.lastImportStatus = .error("Failed to import video: \(error.localizedDescription)")
                 }
             }
         }
@@ -161,24 +156,49 @@ class FileImportManager: ObservableObject {
 
     func importLUT(from url: URL, isSecondary: Bool = false) {
         lastImportStatus = .importing
-        
-        // Start accessing the security-scoped resource
-        guard url.startAccessingSecurityScopedResource() else {
-            lastImportStatus = .error("Unable to access LUT file")
-            return
+        lastImportedURL = nil
+        Task {
+            do {
+                let importedURL = try await Task.detached(priority: .userInitiated) {
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    _ = try LUTParsingUtils.parseLUTFile(url)
+                    return try Self.copyImportedFile(from: url)
+                }.value
+                lastImportedURL = importedURL
+                let lutType = isSecondary ? "Secondary LUT" : "Primary LUT"
+                lastImportStatus = .success("\(lutType) imported: \(url.lastPathComponent)")
+            } catch {
+                lastImportStatus = .error("Failed to import LUT: \(error.localizedDescription)")
+            }
         }
-        
-        // Simulate import process with actual file validation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            // Stop accessing the resource when done
-            url.stopAccessingSecurityScopedResource()
-            let lutType = isSecondary ? "Secondary LUT" : "Primary LUT"
-            self.lastImportStatus = .success("\(lutType) imported: \(url.lastPathComponent)")
+    }
+
+    nonisolated static func copyImportedFile(from source: URL, to directory: URL? = nil) throws -> URL {
+        let accessing = source.startAccessingSecurityScopedResource()
+        defer { if accessing { source.stopAccessingSecurityScopedResource() } }
+        // startAccessing returning false is normal for files already in the app sandbox.
+        let properties = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard source.isFileURL, properties.isRegularFile == true, (properties.fileSize ?? 0) > 0,
+              FileManager.default.isReadableFile(atPath: source.path) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let destinationDirectory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ImportedFiles", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let destination = destinationDirectory.appendingPathComponent("\(UUID().uuidString)-\(source.lastPathComponent)")
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
     }
 
     func resetStatus() {
         lastImportStatus = .idle
+        lastImportedURL = nil
     }
 }
 

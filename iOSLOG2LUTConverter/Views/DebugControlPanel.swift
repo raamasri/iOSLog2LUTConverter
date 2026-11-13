@@ -11,6 +11,7 @@ struct DebugControlPanel: View {
     @State private var isRandomizing = false
     @State private var testProgress: Double = 0.0
     @State private var currentTestStep = ""
+    @State private var isRunningFullTest = false
     
     // Randomization settings
     @State private var randomPrimaryOpacity: Float = 1.0
@@ -73,6 +74,7 @@ struct DebugControlPanel: View {
                 }
                 .padding()
             }
+            .disabled(projectState.isExporting || projectState.isBatchProcessing || isRunningFullTest)
         }
         .background(
             .ultraThinMaterial,
@@ -359,14 +361,22 @@ struct DebugControlPanel: View {
     
     // MARK: - Helper Methods
     private func runFullTest() {
+        guard !isRunningFullTest, !projectState.isExporting, !projectState.isBatchProcessing else { return }
+        isRunningFullTest = true
         addLog("🚀 Starting full test workflow...")
-        
+
         Task {
+            defer { isRunningFullTest = false }
             // Step 1: Load test video
             updateTestProgress(0.1, "Loading test video...")
             projectState.enableDebugMode()
             try? await Task.sleep(nanoseconds: 500_000_000)
-            
+            guard !projectState.videoURLs.isEmpty else {
+                updateTestProgress(0, "No video available. Import a video before running the workflow.")
+                addLog("❌ Test workflow stopped: no bundled test video or imported video is available.")
+                return
+            }
+
             // Step 2: Randomize primary LUT
             updateTestProgress(0.2, "Selecting random primary LUT...")
             randomizePrimaryLUT()
@@ -397,8 +407,8 @@ struct DebugControlPanel: View {
             updateTestProgress(0.8, "Starting export...")
             testExport()
             
-            updateTestProgress(1.0, "Test complete!")
-            addLog("✅ Full test workflow completed")
+            updateTestProgress(0.8, "Export requested; follow progress in main view")
+            addLog("📤 Export requested; follow progress in main view. Export completion has not been verified.")
             
             // Clear progress after delay
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -422,13 +432,15 @@ struct DebugControlPanel: View {
     }
     
     private func clearAllSettings() {
+        guard !projectState.isExporting, !projectState.isBatchProcessing else { return }
         addLog("🗑️ Clearing all settings...")
         
         withAnimation {
             lutManager.clearPrimaryLUT()
             lutManager.clearSecondaryLUT()
             projectState.resetToDefaults()
-            projectState.videoURLs.removeAll()
+            projectState.clearBatchQueue()
+            projectState.clearVideoURLs()
         }
     }
     

@@ -110,4 +110,7 @@ VideoLUTConverter Archive/
 
 # Documentation files (temporary)
 *.md
-!README.md 
+!README.md
+# Local validation scripts
+__pycache__/
+*.pyc

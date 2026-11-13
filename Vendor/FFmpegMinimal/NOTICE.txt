@@ -1,0 +1,36 @@
+FFmpeg 9.0.2 software H.264 decoder dependency
+
+Upstream: https://github.com/FFmpeg/FFmpeg
+Release tag: n9.0.2
+Commit: 946fcce07b6dcd0331c8cc609192aeff5e1924f8
+Copyright: the FFmpeg developers; see individual source files for attribution.
+License for this configured binary: GNU Lesser General Public License 2.1 or later.
+Full license: LICENSE.LGPLv2.1 in this directory.
+
+The corresponding unmodified FFmpeg source is included in
+source/ffmpeg-9.0.2.tar.xz, with SHA-256 in source/SHA256SUMS.
+The archive was reproducibly assembled from the pinned Git commit, excluding
+Git metadata and normalizing archive ownership and timestamps to zero.
+
+Build: bash scripts/dependencies/build_ffmpeg_ios.sh from the repository root.
+The script verifies the archive, uses only the supplied source, and builds
+static arm64 iOS-device and arm64 iOS-simulator libraries with Apple's SDK.
+Its configuration explicitly disables GPL, nonfree, version3, networking,
+programs, and external dependencies. It enables only the H.264 decoder/parser,
+MOV/MP4 demuxer, local file protocol, and avutil/swscale required for conversion.
+The complete configure output and library hashes are included next to this file.
+
+Integration: the application uses only the FFmpegVideoDecoder Objective-C
+bridge and SoftwareVideoDecoder Swift wrapper for local video decoding when
+Apple's native decoder does not support a source profile. FFmpeg performs no
+network access or audio processing in this build. Core Image still applies LUTs
+and AVFoundation encodes the final video and processes audio.
+
+Relinking and distribution: these libraries are statically linked. Binary
+redistribution must retain this notice and license, include the corresponding
+library source and build scripts, and provide the application object files or
+application source and instructions needed to relink with a modified library,
+as required by the LGPL. This repository contains the application source and
+reproducible dependency build scripts. Local Xcode archive/build intermediates
+are kept outside the dependency source archive and should accompany any binary
+redistribution package where application source is not provided.

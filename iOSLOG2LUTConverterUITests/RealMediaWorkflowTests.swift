@@ -110,7 +110,12 @@ final class RealMediaWorkflowTests: XCTestCase {
         let whiteBalance = app.sliders["whiteBalance"]
         reveal(whiteBalance, app: app)
         let initialWhiteBalance = whiteBalance.value as? String
-        whiteBalance.adjust(toNormalizedSliderPosition: 0.55)
+        // This signed-value SwiftUI slider exposes a raw value ("0"), whereas
+        // opacity exposes a percentage. XCTest's normalized accessibility
+        // adjustment does not reliably move it on iPad; drag the visible thumb
+        // as a user would and still require the value to actually change.
+        whiteBalance.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: whiteBalance.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)))
         XCTAssertNotEqual(whiteBalance.value as? String, initialWhiteBalance)
         let secondary = app.sliders["secondaryOpacity"]
         reveal(secondary, app: app)
@@ -131,17 +136,17 @@ final class RealMediaWorkflowTests: XCTestCase {
         capture(app, "Real media before-after after scrubbing")
         XCUIDevice.shared.orientation = .landscapeLeft
         let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.frame.width > app.frame.height
+            app.frame.width > app.frame.height && self.comparisonFitsWindow(app)
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [landscape], timeout: 10), .completed)
-        capture(app, "Real media landscape comparison")
+        capture(app, "Real media landscape comparison", hierarchy: true)
         XCTAssertGreaterThan(app.images["comparisonOriginal"].frame.height, 60, "Landscape must reserve meaningful image height")
         XCTAssertGreaterThan(app.images["comparisonGraded"].frame.height, 60, "Landscape must reserve meaningful image height")
         XCTAssertLessThan(app.staticTexts["BEFORE"].frame.maxY, app.sliders["videoTimeline"].frame.minY - 40)
         XCTAssertLessThan(app.staticTexts["AFTER"].frame.maxY, app.sliders["videoTimeline"].frame.minY - 40)
         XCUIDevice.shared.orientation = .portrait
         let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.frame.height > app.frame.width
+            app.frame.height > app.frame.width && self.comparisonFitsWindow(app)
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 10), .completed)
         capture(app, "Real media portrait comparison after rotation")
@@ -160,6 +165,17 @@ final class RealMediaWorkflowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["BEFORE"].waitForExistence(timeout: 5))
         capture(app, "Real media split comparison")
         comparison.tap()
+    }
+
+    @MainActor
+    private func comparisonFitsWindow(_ app: XCUIApplication) -> Bool {
+        let window = app.frame.insetBy(dx: -1, dy: -1)
+        return ["comparisonOriginal", "comparisonGraded"].allSatisfy { identifier in
+            let image = app.images[identifier]
+            guard image.exists else { return false }
+            let frame = image.frame
+            return frame.width > 60 && frame.height > 60 && window.contains(frame)
+        }
     }
 
     @MainActor
@@ -274,13 +290,16 @@ final class RealMediaWorkflowTests: XCTestCase {
             app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch
         }
         if !item(stem).exists {
-            // The hosted Files UI can appear after SwiftUI's presentation
-            // completes. Wait for its actual Browse tab before querying locations.
-            let browse = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Browse")).firstMatch
-            XCTAssertTrue(browse.waitForExistence(timeout: 15), "The native Files Browse tab must be available")
-            browse.tap()
-            capture(app, "Files Browse locations for \(filename)", hierarchy: true)
             let device = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'On My iPhone' OR label == 'On My iPad'")).firstMatch
+            // iPad presents locations directly in its sidebar; iPhone exposes
+            // them after Browse. Wait for the hosted picker before deciding
+            // which of these actual native layouts needs navigation.
+            if !device.waitForExistence(timeout: 5) {
+                let browse = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Browse")).firstMatch
+                XCTAssertTrue(browse.waitForExistence(timeout: 15), "The native Files Browse tab or locations sidebar must be available")
+                browse.tap()
+            }
+            capture(app, "Files locations for \(filename)", hierarchy: true)
             XCTAssertTrue(device.waitForExistence(timeout: 10), "The app's Files documents provider must be visible")
             device.tap()
             let appFolder = item("VideoLUTConverter")
@@ -308,7 +327,8 @@ final class RealMediaWorkflowTests: XCTestCase {
             custom.tap()
             chooseDocument(filename, app: app)
             XCTAssertTrue(selector.waitForExistence(timeout: 20))
-            XCTAssertTrue(selector.label.contains(secondary ? "IWLTBAP Aspen" : "SGamut3CineSLog3"), "The selected supplied custom LUT must be reflected in the main controls")
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", secondary ? "IWLTBAP Aspen" : "SGamut3CineSLog3"), object: selector)
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 30), .completed, "The selected supplied custom LUT must be reflected in the main controls after import completes")
         }
         capture(app, "Both supplied custom LUTs imported through native Files", hierarchy: true)
     }
@@ -331,6 +351,8 @@ final class RealMediaWorkflowTests: XCTestCase {
             XCTAssertTrue(custom.waitForExistence(timeout: 10))
             custom.tap()
             chooseDocument(filename, app: app)
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", secondary ? "IWLTBAP Aspen" : "SGamut3CineSLog3"), object: selector)
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 30), .completed, "The supplied custom LUT must finish importing before grading")
             XCTAssertTrue(app.images["gradedPreview"].waitForExistence(timeout: 60))
         }
         adjustGrade(app: app)

@@ -34,3 +34,9 @@ as required by the LGPL. This repository contains the application source and
 reproducible dependency build scripts. Local Xcode archive/build intermediates
 are kept outside the dependency source archive and should accompany any binary
 redistribution package where application source is not provided.
+
+Application source, corresponding FFmpeg source, dependency build script, and
+relinking instructions for this release are available at
+https://github.com/raamasri/iOSLog2LUTConverter/tree/v0.43.0 . The corresponding
+library source is under Vendor/FFmpegMinimal/source; follow
+scripts/dependencies/build_ffmpeg_ios.sh and the README build instructions.
